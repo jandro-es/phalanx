@@ -1,0 +1,150 @@
+name: "Phalanx PR Review"
+description: "AI-powered multi-agent pull request review"
+author: "Phalanx"
+
+branding:
+  icon: "shield"
+  color: "blue"
+
+inputs:
+  phalanx_url:
+    description: "URL of the Phalanx server"
+    required: true
+  phalanx_token:
+    description: "Phalanx API token"
+    required: true
+  agents:
+    description: "Comma-separated list of agent skill slugs to run (empty = all)"
+    required: false
+    default: ""
+  fail_on:
+    description: "Verdict that causes the action to fail: 'fail', 'warn', or 'none'"
+    required: false
+    default: "fail"
+  timeout:
+    description: "Timeout in milliseconds to wait for review completion"
+    required: false
+    default: "120000"
+  post_comment:
+    description: "Post composite report as PR comment"
+    required: false
+    default: "true"
+
+outputs:
+  session_id:
+    description: "The Phalanx review session ID"
+  overall_verdict:
+    description: "The overall review verdict (pass/warn/fail)"
+  report_url:
+    description: "URL to the full report on the Phalanx dashboard"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Get PR metadata
+      id: meta
+      shell: bash
+      run: |
+        echo "repo=${{ github.repository }}" >> $GITHUB_OUTPUT
+        echo "pr_number=${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+        echo "head_sha=${{ github.event.pull_request.head.sha }}" >> $GITHUB_OUTPUT
+        echo "base_sha=${{ github.event.pull_request.base.sha }}" >> $GITHUB_OUTPUT
+
+    - name: Trigger Phalanx Review
+      id: trigger
+      shell: bash
+      run: |
+        BODY=$(cat <<EOF
+        {
+          "platform": "github",
+          "repository": "${{ steps.meta.outputs.repo }}",
+          "prNumber": ${{ steps.meta.outputs.pr_number }},
+          "headSha": "${{ steps.meta.outputs.head_sha }}",
+          "baseSha": "${{ steps.meta.outputs.base_sha }}",
+          "triggerSource": "ci-action"
+          $([ -n "${{ inputs.agents }}" ] && echo ',"agents": ["'$(echo "${{ inputs.agents }}" | sed 's/,/","/g')'"]')
+        }
+        EOF
+        )
+
+        RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+          "${{ inputs.phalanx_url }}/api/reviews" \
+          -H "Content-Type: application/json" \
+          -H "Authorization: Bearer ${{ inputs.phalanx_token }}" \
+          -d "$BODY")
+
+        HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+        BODY=$(echo "$RESPONSE" | head -n -1)
+
+        if [ "$HTTP_CODE" != "202" ]; then
+          echo "❌ Failed to trigger review (HTTP $HTTP_CODE): $BODY"
+          exit 1
+        fi
+
+        SESSION_ID=$(echo "$BODY" | jq -r '.sessionId')
+        echo "session_id=$SESSION_ID" >> $GITHUB_OUTPUT
+        echo "🛡️ Phalanx review triggered — session: $SESSION_ID"
+
+    - name: Wait for completion
+      id: wait
+      shell: bash
+      run: |
+        SESSION_ID="${{ steps.trigger.outputs.session_id }}"
+        TIMEOUT=${{ inputs.timeout }}
+        START=$(date +%s%3N)
+        VERDICT=""
+
+        while true; do
+          NOW=$(date +%s%3N)
+          ELAPSED=$((NOW - START))
+          if [ $ELAPSED -gt $TIMEOUT ]; then
+            echo "❌ Timed out after ${TIMEOUT}ms"
+            exit 1
+          fi
+
+          RESPONSE=$(curl -s \
+            "${{ inputs.phalanx_url }}/api/reviews/$SESSION_ID" \
+            -H "Authorization: Bearer ${{ inputs.phalanx_token }}")
+
+          STATUS=$(echo "$RESPONSE" | jq -r '.session.status')
+          COMPLETED=$(echo "$RESPONSE" | jq -r '.progress.completed')
+          TOTAL=$(echo "$RESPONSE" | jq -r '.progress.total')
+
+          echo "⏳ Progress: $COMPLETED/$TOTAL agents ($STATUS)"
+
+          if [ "$STATUS" = "completed" ] || [ "$STATUS" = "failed" ]; then
+            VERDICT=$(echo "$RESPONSE" | jq -r '.session.overall_verdict')
+            echo "overall_verdict=$VERDICT" >> $GITHUB_OUTPUT
+            echo "report_url=${{ inputs.phalanx_url }}/sessions/$SESSION_ID" >> $GITHUB_OUTPUT
+
+            # Save composite report
+            echo "$RESPONSE" | jq -r '.session.composite_report // empty' > phalanx-report.md
+            break
+          fi
+
+          sleep 3
+        done
+
+        echo ""
+        echo "📋 Review verdict: $VERDICT"
+
+        # Check fail condition
+        FAIL_ON="${{ inputs.fail_on }}"
+        if [ "$FAIL_ON" = "fail" ] && [ "$VERDICT" = "fail" ]; then
+          echo "❌ Review failed — blocking merge"
+          exit 1
+        fi
+        if [ "$FAIL_ON" = "warn" ] && ([ "$VERDICT" = "fail" ] || [ "$VERDICT" = "warn" ]); then
+          echo "❌ Review has warnings — blocking merge"
+          exit 1
+        fi
+
+        echo "✅ Review passed"
+
+    - name: Upload report artifact
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: phalanx-report
+        path: phalanx-report.md
+        if-no-files-found: ignore

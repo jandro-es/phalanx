@@ -1,0 +1,74 @@
+# =============================================================================
+# Phalanx — .gitignore
+# =============================================================================
+
+# --- OS junk ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Editors / IDEs ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# --- Claude Code local settings ---
+.claude/
+
+# --- Go build outputs ---
+/bin/
+/dist/
+*.exe
+*.test
+*.prof
+coverage.out
+coverage.html
+
+# Loose binaries accidentally built at the repo root
+/phalanx
+/phalanx-server
+/cli
+/server
+
+# Go workspace / vendor
+go.work
+go.work.sum
+/vendor/
+
+# --- Dashboard (React / Vite) ---
+dashboard/node_modules/
+dashboard/dist/
+dashboard/.vite/
+dashboard/.turbo/
+dashboard/.cache/
+dashboard/coverage/
+dashboard/*.log
+dashboard/.env
+dashboard/.env.*
+!dashboard/.env.example
+
+# --- Environment files (never commit real secrets) ---
+.env
+.env.*
+!.env.example
+
+# --- Logs ---
+*.log
+logs/
+
+# --- Private spec copies (duplicates of docs/PLAN.md and README.md) ---
+PHALANX-PLAN.md
+PHALANX-README.md
+
+# --- Stray shell-expansion artefact ---
+{cmd/
+
+# --- Secrets / certificates ---
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+secrets/

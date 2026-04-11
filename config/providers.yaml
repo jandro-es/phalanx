@@ -1,0 +1,103 @@
+# =============================================================================
+# Phalanx — LLM Provider Configuration
+# =============================================================================
+# This file defines the LLM providers available to Phalanx agents.
+# Import with: phalanx provider register config/providers.yaml
+#
+# API keys are NEVER stored here. Use vault://, env://, or file:// references.
+# =============================================================================
+
+providers:
+  # ---------------------------------------------------------------------------
+  # Anthropic (Claude)
+  # ---------------------------------------------------------------------------
+  - name: anthropic
+    base_url: https://api.anthropic.com/v1
+    auth_method: api-key-header
+    api_key_ref: env://ANTHROPIC_API_KEY
+    default_model: claude-sonnet-4-20250514
+    models:
+      - claude-sonnet-4-20250514
+      - claude-haiku-4-5-20251001
+      - claude-opus-4-6
+    rate_limit:
+      requests_per_minute: 60
+      tokens_per_minute: 400000
+    config:
+      timeout_ms: 60000
+      max_retries: 2
+
+  # ---------------------------------------------------------------------------
+  # OpenAI
+  # ---------------------------------------------------------------------------
+  - name: openai
+    base_url: https://api.openai.com/v1
+    auth_method: bearer
+    api_key_ref: env://OPENAI_API_KEY
+    default_model: gpt-4.1
+    models:
+      - gpt-4.1
+      - gpt-4.1-mini
+      - gpt-4.1-nano
+      - o3
+      - o4-mini
+    rate_limit:
+      requests_per_minute: 500
+      tokens_per_minute: 800000
+
+  # ---------------------------------------------------------------------------
+  # DeepSeek
+  # ---------------------------------------------------------------------------
+  - name: deepseek
+    base_url: https://api.deepseek.com
+    auth_method: bearer
+    api_key_ref: env://DEEPSEEK_API_KEY
+    default_model: deepseek-r1
+    models:
+      - deepseek-r1
+      - deepseek-v3
+    rate_limit:
+      requests_per_minute: 60
+      tokens_per_minute: 300000
+
+  # ---------------------------------------------------------------------------
+  # Google Gemini (OpenAI-compatible endpoint)
+  # ---------------------------------------------------------------------------
+  - name: google
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai
+    auth_method: bearer
+    api_key_ref: env://GOOGLE_API_KEY
+    default_model: gemini-2.5-pro
+    models:
+      - gemini-2.5-pro
+      - gemini-2.5-flash
+
+  # ---------------------------------------------------------------------------
+  # Self-hosted via vLLM (example)
+  # ---------------------------------------------------------------------------
+  # - name: self-hosted-qwen
+  #   base_url: https://llm-internal.company.com/v1
+  #   auth_method: bearer
+  #   api_key_ref: env://INTERNAL_LLM_KEY
+  #   default_model: Qwen/Qwen3-235B-A22B
+  #   models:
+  #     - Qwen/Qwen3-235B-A22B
+  #     - Qwen/Qwen3-32B
+  #   config:
+  #     timeout_ms: 180000    # self-hosted may be slower
+  #     max_retries: 1
+
+  # ---------------------------------------------------------------------------
+  # Self-hosted via Ollama (example)
+  # ---------------------------------------------------------------------------
+  # - name: ollama-local
+  #   base_url: http://localhost:11434/v1
+  #   auth_method: none
+  #   default_model: gemma4:27b
+  #   models:
+  #     - gemma4:27b
+  #     - qwen3:32b
+  #     - MiniMax-M1-80k
+  #   config:
+  #     timeout_ms: 300000
+  #     max_retries: 0

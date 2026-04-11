@@ -1,0 +1,17 @@
+# Phalanx Dashboard — React 19 + Vite 6 + Tailwind 4
+# Builds the dashboard and serves it with a tiny static server.
+
+FROM node:22-alpine AS builder
+WORKDIR /src
+COPY dashboard/package.json dashboard/package-lock.json* ./
+RUN npm install --no-audit --no-fund
+COPY dashboard/ ./
+RUN npm run build
+
+FROM node:22-alpine
+WORKDIR /srv
+RUN npm install -g serve@14
+COPY --from=builder /src/dist /srv/dist
+EXPOSE 3000
+ENV PORT=3000
+CMD ["serve", "-s", "dist", "-l", "3000"]

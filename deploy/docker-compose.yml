@@ -1,0 +1,111 @@
+# =============================================================================
+# Phalanx — Docker Compose
+# =============================================================================
+# Usage:
+#   docker compose up -d              # Start all services
+#   docker compose up -d --build      # Rebuild and start
+#   docker compose exec phalanx sh    # Shell into the server
+#   docker compose logs -f phalanx    # Tail server logs
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Phalanx Server
+  # ---------------------------------------------------------------------------
+  phalanx:
+    build:
+      context: ../
+      dockerfile: deploy/Dockerfile
+    ports:
+      - "3100:3100"
+    environment:
+      NODE_ENV: production
+      PORT: 3100
+      DATABASE_URL: postgresql://phalanx:phalanx@postgres:5432/phalanx
+      REDIS_URL: redis://redis:6379
+      LOG_LEVEL: info
+
+      # Git platform tokens (set in .env file)
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
+      GITLAB_TOKEN: ${GITLAB_TOKEN:-}
+      GITLAB_URL: ${GITLAB_URL:-https://gitlab.com}
+      GITLAB_WEBHOOK_SECRET: ${GITLAB_WEBHOOK_SECRET:-}
+
+      # LLM provider keys (set in .env file)
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+
+      # Audit
+      PHALANX_AUDIT_HASH_CHAIN: ${PHALANX_AUDIT_HASH_CHAIN:-false}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3100/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: phalanx
+      POSTGRES_USER: phalanx
+      POSTGRES_PASSWORD: phalanx
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ../migrations:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U phalanx -d phalanx"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Redis
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redisdata:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Dashboard (optional — for web UI)
+  # ---------------------------------------------------------------------------
+  dashboard:
+    build:
+      context: ../
+      dockerfile: deploy/Dockerfile.dashboard
+    ports:
+      - "3000:3000"
+    environment:
+      PHALANX_API_URL: http://phalanx:3100
+    depends_on:
+      - phalanx
+    restart: unless-stopped
+    profiles:
+      - dashboard
+
+volumes:
+  pgdata:
+  redisdata:

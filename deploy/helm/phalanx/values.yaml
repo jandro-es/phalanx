@@ -1,0 +1,152 @@
+# =============================================================================
+# Phalanx — Helm Chart Values
+# =============================================================================
+
+replicaCount: 2
+
+image:
+  repository: ghcr.io/phalanx-ai/phalanx
+  tag: "1.0.0"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+service:
+  type: ClusterIP
+  port: 3100
+
+ingress:
+  enabled: false
+  className: nginx
+  annotations: {}
+  hosts:
+    - host: phalanx.company.internal
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+# ---------------------------------------------------------------------------
+# PostgreSQL (Bitnami subchart or external)
+# ---------------------------------------------------------------------------
+postgresql:
+  enabled: true  # Set to false if using external database
+  auth:
+    database: phalanx
+    username: phalanx
+    password: ""  # Set via --set or secrets
+    existingSecret: ""
+  primary:
+    persistence:
+      size: 20Gi
+  # External database (used when postgresql.enabled=false)
+  external:
+    host: ""
+    port: 5432
+    database: phalanx
+    existingSecret: ""
+    secretKeys:
+      username: username
+      password: password
+
+# ---------------------------------------------------------------------------
+# Redis (Bitnami subchart or external)
+# ---------------------------------------------------------------------------
+redis:
+  enabled: true
+  auth:
+    enabled: false
+  master:
+    persistence:
+      size: 2Gi
+  external:
+    host: ""
+    port: 6379
+
+# ---------------------------------------------------------------------------
+# Phalanx Configuration
+# ---------------------------------------------------------------------------
+config:
+  logLevel: info
+
+  queue:
+    concurrency: 10
+    maxRetries: 2
+    jobTimeoutMs: 120000
+
+  audit:
+    retentionDays: 1095
+    hashChain: false
+    archiveToS3: false
+
+  review:
+    maxDiffSizeBytes: 5000000
+    postCommentOnPr: true
+    createCheckRun: true
+    blockMergeOnFail: true
+
+# ---------------------------------------------------------------------------
+# Secrets (create manually or reference existing)
+# ---------------------------------------------------------------------------
+secrets:
+  # Create a Kubernetes secret named "phalanx-secrets" with these keys:
+  existingSecret: ""
+  # Or provide directly (NOT recommended for production):
+  github:
+    token: ""
+    webhookSecret: ""
+  gitlab:
+    token: ""
+    webhookSecret: ""
+  llm:
+    anthropicApiKey: ""
+    openaiApiKey: ""
+    deepseekApiKey: ""
+
+# ---------------------------------------------------------------------------
+# Migrations job
+# ---------------------------------------------------------------------------
+migrations:
+  enabled: true
+  backoffLimit: 3
+
+# ---------------------------------------------------------------------------
+# Service Monitor (Prometheus)
+# ---------------------------------------------------------------------------
+serviceMonitor:
+  enabled: false
+  interval: 30s
+
+# ---------------------------------------------------------------------------
+# Pod configuration
+# ---------------------------------------------------------------------------
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+podAnnotations: {}
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL

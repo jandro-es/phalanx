@@ -1,0 +1,126 @@
+# =============================================================================
+# Phalanx — GitLab CI/CD Integration Template
+# =============================================================================
+# Include in your .gitlab-ci.yml:
+#
+#   include:
+#     - remote: 'https://raw.githubusercontent.com/phalanx-ai/phalanx/main/integrations/gitlab-template/.phalanx.gitlab-ci.yml'
+#
+# Required CI/CD variables:
+#   PHALANX_URL    — Phalanx server URL
+#   PHALANX_TOKEN  — Phalanx API token
+#
+# Optional variables:
+#   PHALANX_AGENTS      — Comma-separated agent slugs (default: all)
+#   PHALANX_FAIL_ON     — "fail", "warn", or "none" (default: fail)
+#   PHALANX_TIMEOUT     — Timeout in seconds (default: 120)
+# =============================================================================
+
+.phalanx-review:
+  stage: test
+  image: curlimages/curl:latest
+  variables:
+    PHALANX_FAIL_ON: "fail"
+    PHALANX_TIMEOUT: "120"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+  script:
+    - |
+      echo "🛡️ Phalanx PR Review"
+      echo "   Project: ${CI_PROJECT_PATH}"
+      echo "   MR: !${CI_MERGE_REQUEST_IID}"
+      echo "   Branch: ${CI_MERGE_REQUEST_SOURCE_BRANCH_NAME} → ${CI_MERGE_REQUEST_TARGET_BRANCH_NAME}"
+      echo ""
+
+      # Build request body
+      AGENTS_JSON=""
+      if [ -n "${PHALANX_AGENTS:-}" ]; then
+        AGENTS_JSON=$(echo "$PHALANX_AGENTS" | tr ',' '\n' | awk '{printf "\"%s\",", $0}' | sed 's/,$//')
+        AGENTS_JSON=", \"agents\": [$AGENTS_JSON]"
+      fi
+
+      BODY="{
+        \"platform\": \"gitlab\",
+        \"repository\": \"${CI_PROJECT_PATH}\",
+        \"prNumber\": ${CI_MERGE_REQUEST_IID},
+        \"headSha\": \"${CI_COMMIT_SHA}\",
+        \"baseSha\": \"${CI_MERGE_REQUEST_DIFF_BASE_SHA}\",
+        \"triggerSource\": \"ci-action\"
+        ${AGENTS_JSON}
+      }"
+
+      # Trigger review
+      RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+        "${PHALANX_URL}/api/reviews" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer ${PHALANX_TOKEN}" \
+        -d "$BODY")
+
+      HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+      RESP_BODY=$(echo "$RESPONSE" | head -n -1)
+
+      if [ "$HTTP_CODE" != "202" ]; then
+        echo "❌ Failed to trigger review (HTTP $HTTP_CODE): $RESP_BODY"
+        exit 1
+      fi
+
+      SESSION_ID=$(echo "$RESP_BODY" | grep -o '"sessionId":"[^"]*"' | cut -d'"' -f4)
+      echo "✅ Review triggered — session: ${SESSION_ID}"
+      echo ""
+
+      # Poll for completion
+      ELAPSED=0
+      while [ $ELAPSED -lt $PHALANX_TIMEOUT ]; do
+        POLL=$(curl -s \
+          "${PHALANX_URL}/api/reviews/${SESSION_ID}" \
+          -H "Authorization: Bearer ${PHALANX_TOKEN}")
+
+        STATUS=$(echo "$POLL" | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4)
+        echo "⏳ Status: ${STATUS} (${ELAPSED}s / ${PHALANX_TIMEOUT}s)"
+
+        if [ "$STATUS" = "completed" ] || [ "$STATUS" = "failed" ]; then
+          break
+        fi
+
+        sleep 3
+        ELAPSED=$((ELAPSED + 3))
+      done
+
+      if [ $ELAPSED -ge $PHALANX_TIMEOUT ]; then
+        echo "❌ Timed out after ${PHALANX_TIMEOUT}s"
+        exit 1
+      fi
+
+      # Extract verdict
+      VERDICT=$(echo "$POLL" | grep -o '"overall_verdict":"[^"]*"' | cut -d'"' -f4)
+      echo ""
+      echo "📋 Review verdict: ${VERDICT}"
+
+      # Save report
+      echo "$POLL" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('session',{}).get('composite_report',''))" > phalanx-report.md 2>/dev/null || true
+
+      # Check fail condition
+      if [ "$PHALANX_FAIL_ON" = "fail" ] && [ "$VERDICT" = "fail" ]; then
+        echo "❌ Review failed — blocking merge"
+        exit 1
+      fi
+      if [ "$PHALANX_FAIL_ON" = "warn" ]; then
+        if [ "$VERDICT" = "fail" ] || [ "$VERDICT" = "warn" ]; then
+          echo "❌ Review has warnings — blocking merge"
+          exit 1
+        fi
+      fi
+
+      echo "✅ Review passed"
+
+  artifacts:
+    when: always
+    paths:
+      - phalanx-report.md
+    reports:
+      codequality: phalanx-report.md
+    expire_in: 90 days
+
+# Ready-to-use job — add to your pipeline:
+phalanx-review:
+  extends: .phalanx-review
