@@ -41,15 +41,18 @@ export function Sessions() {
   const api = useApi();
   const [sessions, setSessions] = useState<Session[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    api.get("/api/reviews?limit=50").then((data) => {
-      setSessions(data.sessions);
-      setLoading(false);
-    });
+    api
+      .get("/api/reviews?limit=50")
+      .then((data) => setSessions(data.sessions ?? []))
+      .catch((e) => setError(String(e)))
+      .finally(() => setLoading(false));
   }, []);
 
   if (loading) return <div className="text-gray-500">Loading reviews...</div>;
+  if (error) return <div className="text-red-600">Failed to load reviews: {error}</div>;
 
   return (
     <div>
@@ -68,6 +71,13 @@ export function Sessions() {
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
+            {sessions.length === 0 && (
+              <tr>
+                <td colSpan={6} className="px-4 py-6 text-center text-sm text-gray-400">
+                  No review sessions yet.
+                </td>
+              </tr>
+            )}
             {sessions.map((s) => {
               const verdict = s.overall_verdict ? VERDICT_BADGE[s.overall_verdict] : null;
               return (

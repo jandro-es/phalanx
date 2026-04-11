@@ -9,12 +9,29 @@ export function ProviderConfig() {
   const api = useApi();
   const [providers, setProviders] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    api.get("/api/providers").then((d) => { setProviders(d.providers); setLoading(false); });
+    api
+      .get("/api/providers")
+      .then((d) => setProviders(d.providers ?? []))
+      .catch((e) => setError(String(e)))
+      .finally(() => setLoading(false));
   }, []);
 
   if (loading) return <div className="text-gray-500">Loading providers...</div>;
+  if (error) return <div className="text-red-600">Failed to load providers: {error}</div>;
+  if (providers.length === 0) {
+    return (
+      <div>
+        <h1 className="text-2xl font-bold text-gray-900 mb-6">LLM Providers</h1>
+        <div className="text-sm text-gray-400 bg-white border rounded-lg p-6">
+          No LLM providers configured. Register one with{" "}
+          <code>POST /api/providers</code> or via the CLI.
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div>

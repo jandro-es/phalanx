@@ -36,6 +36,7 @@ export function AuditTrail() {
   const api = useApi();
   const [entries, setEntries] = useState<AuditEntry[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState({
     sessionId: "",
     eventType: "",
@@ -44,14 +45,20 @@ export function AuditTrail() {
 
   const loadEntries = async () => {
     setLoading(true);
+    setError(null);
     const params = new URLSearchParams({ limit: "200" });
     if (filters.sessionId) params.set("sessionId", filters.sessionId);
     if (filters.eventType) params.set("eventType", filters.eventType);
     if (filters.actor) params.set("actor", filters.actor);
 
-    const data = await api.get(`/api/audit?${params}`);
-    setEntries(data.entries);
-    setLoading(false);
+    try {
+      const data = await api.get(`/api/audit?${params}`);
+      setEntries(data.entries ?? []);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => { loadEntries(); }, []);
@@ -110,6 +117,8 @@ export function AuditTrail() {
       {/* Results */}
       {loading ? (
         <div className="text-gray-500">Loading...</div>
+      ) : error ? (
+        <div className="text-red-600">Failed to load audit trail: {error}</div>
       ) : (
         <div className="bg-white rounded-lg border overflow-hidden">
           <table className="w-full text-sm">
@@ -124,6 +133,13 @@ export function AuditTrail() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
+              {entries.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="px-4 py-6 text-center text-sm text-gray-400">
+                    No audit entries match the current filters.
+                  </td>
+                </tr>
+              )}
               {entries.map((e) => (
                 <tr key={e.id} className="hover:bg-gray-50">
                   <td className="px-4 py-2 text-xs text-gray-400 font-mono">{e.id}</td>

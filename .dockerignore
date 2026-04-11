@@ -1,0 +1,15 @@
+.git
+.gitignore
+.claude
+.DS_Store
+bin/
+*.log
+coverage.out
+coverage.html
+dashboard/node_modules
+dashboard/dist
+dashboard/.vite
+PHALANX-PLAN.md
+PHALANX-README.md
+{cmd/
+.env

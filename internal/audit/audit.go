@@ -151,7 +151,7 @@ func (l *Logger) Query(ctx context.Context, params QueryParams) ([]types.AuditEn
 	}
 	defer rows.Close()
 
-	var entries []types.AuditEntry
+	entries := []types.AuditEntry{}
 	for rows.Next() {
 		var e types.AuditEntry
 		if err := rows.Scan(&e.ID, &e.EventType, &e.SessionID, &e.AgentID, &e.Actor,

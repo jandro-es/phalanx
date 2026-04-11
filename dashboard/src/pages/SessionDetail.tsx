@@ -35,6 +35,7 @@ export function SessionDetail() {
   const api = useApi();
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [showApproval, setShowApproval] = useState(false);
   const [decision, setDecision] = useState<"approve" | "request_changes" | "defer">("approve");
   const [justification, setJustification] = useState("");
@@ -42,29 +43,40 @@ export function SessionDetail() {
 
   useEffect(() => {
     if (!id) return;
+    let cancelled = false;
     const poll = async () => {
-      const result = await api.get(`/api/reviews/${id}`);
-      setData(result);
-      setLoading(false);
-      if (result.session.status === "running" || result.session.status === "queued") {
-        setTimeout(poll, 3000);
+      try {
+        const result = await api.get(`/api/reviews/${id}`);
+        if (cancelled) return;
+        setData(result);
+        setLoading(false);
+        const status = result?.session?.status;
+        if (status === "running" || status === "queued") {
+          setTimeout(poll, 3000);
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setError(String(e));
+          setLoading(false);
+        }
       }
     };
     poll();
+    return () => {
+      cancelled = true;
+    };
   }, [id]);
 
   const submitDecision = async () => {
     setSubmitting(true);
     try {
-      // In production, engineer identity comes from SSO
       await api.post(`/api/decisions/${id}`, {
         decision,
-        engineerId: "dashboard-user",  // replaced by SSO in production
+        engineerId: "dashboard-user",
         engineerName: "Dashboard User",
         justification: justification || undefined,
         overriddenVerdicts: [],
       });
-      // Refresh data
       const result = await api.get(`/api/reviews/${id}`);
       setData(result);
       setShowApproval(false);
@@ -74,9 +86,13 @@ export function SessionDetail() {
   };
 
   if (loading) return <div className="text-gray-500">Loading session...</div>;
-  if (!data) return <div className="text-red-500">Session not found</div>;
+  if (error) return <div className="text-red-600">Failed to load session: {error}</div>;
+  if (!data || !data.session) return <div className="text-red-500">Session not found</div>;
 
-  const { session, reports, decisions, progress } = data;
+  const session = data.session;
+  const reports: Report[] = data.reports ?? [];
+  const decisions: Decision[] = data.decisions ?? [];
+  const progress = data.progress ?? { completed: reports.length, total: reports.length };
 
   return (
     <div className="space-y-6">
@@ -202,6 +218,12 @@ export function SessionDetail() {
       {/* Agent Reports */}
       <div className="space-y-4">
         <h2 className="font-bold text-lg">Agent Reports ({reports.length})</h2>
+        {reports.length === 0 && session.status === "completed" && (
+          <div className="bg-white rounded-lg border p-6 text-sm text-gray-400">
+            No agent reports. This session finished without running any agents —
+            check that at least one agent is enabled.
+          </div>
+        )}
         {reports.map((r: Report) => (
           <details key={r.id} className="bg-white rounded-lg border">
             <summary className="px-6 py-4 cursor-pointer flex items-center justify-between hover:bg-gray-50">

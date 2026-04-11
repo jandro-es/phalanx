@@ -484,7 +484,7 @@ func (h *Handler) listAgents(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	var agents []map[string]any
+	agents := []map[string]any{}
 	for rows.Next() {
 		var id, name, skillSlug, skillName, provName string
 		var enabled bool
@@ -558,7 +558,7 @@ func (h *Handler) disableAgent(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) listSkills(w http.ResponseWriter, r *http.Request) {
 	rows, _ := h.DB.Query(r.Context(), "SELECT id, slug, name, version, is_builtin, tags FROM skills ORDER BY slug")
 	defer rows.Close()
-	var skills []map[string]any
+	skills := []map[string]any{}
 	for rows.Next() {
 		var id, slug, name string
 		var version int
@@ -647,12 +647,15 @@ func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
 	rows, _ := h.DB.Query(r.Context(),
 		"SELECT id, name, base_url, auth_method, default_model, models, config FROM llm_providers ORDER BY name")
 	defer rows.Close()
-	var providers []map[string]any
+	providers := []map[string]any{}
 	for rows.Next() {
 		var id, name, url, auth, model string
 		var models []string
 		var config json.RawMessage
 		rows.Scan(&id, &name, &url, &auth, &model, &models, &config)
+		if models == nil {
+			models = []string{}
+		}
 		providers = append(providers, map[string]any{
 			"id": id, "name": name, "base_url": url, "auth_method": auth,
 			"default_model": model, "models": models, "config": config,

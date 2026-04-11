@@ -9,20 +9,27 @@ export function AgentConfig() {
   const api = useApi();
   const [agents, setAgents] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = () =>
+    api
+      .get("/api/agents")
+      .then((data) => setAgents(data.agents ?? []))
+      .catch((e) => setError(String(e)));
 
   useEffect(() => {
-    api.get("/api/agents").then((data) => { setAgents(data.agents); setLoading(false); });
+    refresh().finally(() => setLoading(false));
   }, []);
 
   const toggleAgent = async (id: string, enabled: boolean) => {
     if (!enabled) {
       await api.post(`/api/agents/${id}`, { enabled: false });
     }
-    const data = await api.get("/api/agents");
-    setAgents(data.agents);
+    await refresh();
   };
 
   if (loading) return <div className="text-gray-500">Loading agents...</div>;
+  if (error) return <div className="text-red-600">Failed to load agents: {error}</div>;
 
   return (
     <div>
@@ -40,6 +47,14 @@ export function AgentConfig() {
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
+            {agents.length === 0 && (
+              <tr>
+                <td colSpan={6} className="px-4 py-6 text-center text-sm text-gray-400">
+                  No agents configured yet. Use <code>phalanx agent</code> or{" "}
+                  <code>POST /api/agents</code> to create one.
+                </td>
+              </tr>
+            )}
             {agents.map((a) => (
               <tr key={a.id} className="hover:bg-gray-50">
                 <td className="px-4 py-3 font-medium">{a.name}</td>
