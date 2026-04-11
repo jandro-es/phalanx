@@ -38,8 +38,13 @@ type Event struct {
 	Payload   map[string]any
 }
 
-// Log writes an audit record. Never returns an error to callers — logs internally.
+// Log writes an audit record. Never returns an error to callers — logs
+// internally. A Logger built with a nil DB (useful in unit tests) silently
+// discards writes.
 func (l *Logger) Log(ctx context.Context, e Event) {
+	if l == nil || l.db == nil {
+		return
+	}
 	payload, _ := json.Marshal(e.Payload)
 
 	if l.hashChain {

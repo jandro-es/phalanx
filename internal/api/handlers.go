@@ -234,10 +234,25 @@ func (h *Handler) getSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Progress: completed = number of reports written so far,
+	// total = enabled agent count (used by polling callers like CI).
+	total := len(reports)
+	var enabledAgents int
+	if err := h.DB.QueryRow(r.Context(),
+		`SELECT count(*) FROM agents WHERE enabled = true`).Scan(&enabledAgents); err == nil {
+		if enabledAgents > total {
+			total = enabledAgents
+		}
+	}
+
 	writeJSON(w, 200, map[string]any{
 		"session":   s,
 		"reports":   reports,
 		"decisions": decisions,
+		"progress": map[string]int{
+			"completed": len(reports),
+			"total":     total,
+		},
 	})
 }
 

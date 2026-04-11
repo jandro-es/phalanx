@@ -97,6 +97,56 @@ func main() {
 	skillCmd.AddCommand(skillRegister, skillList)
 	root.AddCommand(skillCmd)
 
+	// --- provider ---
+	providerCmd := &cobra.Command{Use: "provider", Short: "Manage LLM providers"}
+	providerList := &cobra.Command{
+		Use: "list", Short: "List all providers",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			body, err := apiGet("/api/providers")
+			if err != nil {
+				return err
+			}
+			fmt.Println(body)
+			return nil
+		},
+	}
+	providerRegister := &cobra.Command{
+		Use:   "register [file]",
+		Short: "Register one or more providers from a YAML file",
+		Long: `Register LLM providers from a YAML file. The file may contain either
+a single provider object or a top-level "providers:" list (as shipped in
+config/providers.yaml). Re-running is idempotent — providers with the same
+name are updated in place.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			data, err := os.ReadFile(args[0])
+			if err != nil {
+				return err
+			}
+			providers, err := parseProvidersYAML(data)
+			if err != nil {
+				return fmt.Errorf("parse %s: %w", args[0], err)
+			}
+			if len(providers) == 0 {
+				return fmt.Errorf("no providers found in %s", args[0])
+			}
+			for _, p := range providers {
+				jsonBody, err := json.Marshal(p)
+				if err != nil {
+					return err
+				}
+				resp, err := apiPost("/api/providers", jsonBody)
+				if err != nil {
+					return fmt.Errorf("register %s: %w", p.Name, err)
+				}
+				fmt.Printf("✅ Provider registered (%s → %s): %s\n", p.Name, p.DefaultModel, resp)
+			}
+			return nil
+		},
+	}
+	providerCmd.AddCommand(providerList, providerRegister)
+	root.AddCommand(providerCmd)
+
 	// --- agent ---
 	agentCmd := &cobra.Command{Use: "agent", Short: "Manage agents"}
 	agentList := &cobra.Command{
@@ -272,6 +322,41 @@ func apiGet(path string) (string, error) {
 
 func apiPost(path string, data []byte) (string, error) {
 	return apiPostRaw(path, string(data))
+}
+
+// providerSpec is the shape of a provider entry in YAML. It mirrors
+// types.CreateProviderRequest but uses JSON tags in camelCase since that's
+// what POST /api/providers expects. Two YAML layouts are accepted:
+//  1. A single object (same top-level keys).
+//  2. A top-level "providers:" list (matches config/providers.yaml).
+type providerSpec struct {
+	Name         string         `yaml:"name" json:"name"`
+	BaseURL      string         `yaml:"base_url" json:"baseUrl"`
+	AuthMethod   string         `yaml:"auth_method" json:"authMethod"`
+	APIKeyRef    *string        `yaml:"api_key_ref,omitempty" json:"apiKeyRef,omitempty"`
+	DefaultModel string         `yaml:"default_model" json:"defaultModel"`
+	Models       []string       `yaml:"models" json:"models"`
+	Config       map[string]any `yaml:"config,omitempty" json:"config,omitempty"`
+}
+
+func parseProvidersYAML(data []byte) ([]providerSpec, error) {
+	// First try the list form.
+	var listForm struct {
+		Providers []providerSpec `yaml:"providers"`
+	}
+	if err := yaml.Unmarshal(data, &listForm); err == nil && len(listForm.Providers) > 0 {
+		return listForm.Providers, nil
+	}
+
+	// Fall back to a single provider object.
+	var single providerSpec
+	if err := yaml.Unmarshal(data, &single); err != nil {
+		return nil, err
+	}
+	if single.Name == "" {
+		return nil, fmt.Errorf("providers YAML must contain a 'providers:' list or a single provider object with 'name'")
+	}
+	return []providerSpec{single}, nil
 }
 
 func apiPostRaw(path string, data string) (string, error) {

@@ -110,14 +110,14 @@ const (
 type LLMProvider struct {
 	ID           string         `json:"id" db:"id"`
 	Name         string         `json:"name" db:"name"`
-	BaseURL      string         `json:"baseUrl" db:"base_url"`
-	AuthMethod   AuthMethod     `json:"authMethod" db:"auth_method"`
-	APIKeyRef    *string        `json:"apiKeyRef" db:"api_key_ref"`
-	DefaultModel string         `json:"defaultModel" db:"default_model"`
+	BaseURL      string         `json:"base_url" db:"base_url"`
+	AuthMethod   AuthMethod     `json:"auth_method" db:"auth_method"`
+	APIKeyRef    *string        `json:"api_key_ref" db:"api_key_ref"`
+	DefaultModel string         `json:"default_model" db:"default_model"`
 	Models       []string       `json:"models" db:"models"`
 	Config       ProviderConfig `json:"config" db:"config"`
-	CreatedAt    time.Time      `json:"createdAt" db:"created_at"`
-	UpdatedAt    time.Time      `json:"updatedAt" db:"updated_at"`
+	CreatedAt    time.Time      `json:"created_at" db:"created_at"`
+	UpdatedAt    time.Time      `json:"updated_at" db:"updated_at"`
 }
 
 type ProviderConfig struct {
@@ -138,13 +138,13 @@ type Skill struct {
 	Slug              string          `json:"slug" db:"slug"`
 	Name              string          `json:"name" db:"name"`
 	Version           int             `json:"version" db:"version"`
-	SystemPrompt      string          `json:"systemPrompt" db:"system_prompt"`
-	ChecklistTemplate string          `json:"checklistTemplate" db:"checklist_template"`
-	OutputSchema      json.RawMessage `json:"outputSchema,omitempty" db:"output_schema"`
-	IsBuiltin         bool            `json:"isBuiltin" db:"is_builtin"`
+	SystemPrompt      string          `json:"system_prompt" db:"system_prompt"`
+	ChecklistTemplate string          `json:"checklist_template" db:"checklist_template"`
+	OutputSchema      json.RawMessage `json:"output_schema,omitempty" db:"output_schema"`
+	IsBuiltin         bool            `json:"is_builtin" db:"is_builtin"`
 	Tags              []string        `json:"tags" db:"tags"`
-	CreatedAt         time.Time       `json:"createdAt" db:"created_at"`
-	UpdatedAt         time.Time       `json:"updatedAt" db:"updated_at"`
+	CreatedAt         time.Time       `json:"created_at" db:"created_at"`
+	UpdatedAt         time.Time       `json:"updated_at" db:"updated_at"`
 }
 
 // =============================================================================
@@ -155,9 +155,9 @@ type ContextDocument struct {
 	ID        string    `json:"id" db:"id"`
 	Name      string    `json:"name" db:"name"`
 	Content   string    `json:"content" db:"content"`
-	DocType   string    `json:"docType" db:"doc_type"`
+	DocType   string    `json:"doc_type" db:"doc_type"`
 	Tags      []string  `json:"tags" db:"tags"`
-	CreatedAt time.Time `json:"createdAt" db:"created_at"`
+	CreatedAt time.Time `json:"created_at" db:"created_at"`
 }
 
 // =============================================================================
@@ -167,16 +167,16 @@ type ContextDocument struct {
 type Agent struct {
 	ID            string      `json:"id" db:"id"`
 	Name          string      `json:"name" db:"name"`
-	SkillID       string      `json:"skillId" db:"skill_id"`
-	ProviderID    string      `json:"providerId" db:"provider_id"`
-	ModelOverride *string     `json:"modelOverride" db:"model_override"`
+	SkillID       string      `json:"skill_id" db:"skill_id"`
+	ProviderID    string      `json:"provider_id" db:"provider_id"`
+	ModelOverride *string     `json:"model_override" db:"model_override"`
 	Temperature   float64     `json:"temperature" db:"temperature"`
-	MaxTokens     int         `json:"maxTokens" db:"max_tokens"`
+	MaxTokens     int         `json:"max_tokens" db:"max_tokens"`
 	Enabled       bool        `json:"enabled" db:"enabled"`
 	Priority      int         `json:"priority" db:"priority"`
 	Config        AgentConfig `json:"config" db:"config"`
-	CreatedAt     time.Time   `json:"createdAt" db:"created_at"`
-	UpdatedAt     time.Time   `json:"updatedAt" db:"updated_at"`
+	CreatedAt     time.Time   `json:"created_at" db:"created_at"`
+	UpdatedAt     time.Time   `json:"updated_at" db:"updated_at"`
 }
 
 type AgentConfig struct {
@@ -201,26 +201,26 @@ type AgentWithRelations struct {
 
 type ReviewSession struct {
 	ID                 string          `json:"id" db:"id"`
-	ExternalPRID       string          `json:"externalPrId" db:"external_pr_id"`
+	ExternalPRID       string          `json:"external_pr_id" db:"external_pr_id"`
 	Platform           Platform        `json:"platform" db:"platform"`
-	RepositoryFullName string          `json:"repositoryFullName" db:"repository_full_name"`
-	PRNumber           int             `json:"prNumber" db:"pr_number"`
-	PRTitle            *string         `json:"prTitle" db:"pr_title"`
-	PRAuthor           *string         `json:"prAuthor" db:"pr_author"`
-	PRURL              *string         `json:"prUrl" db:"pr_url"`
-	HeadSHA            string          `json:"headSha" db:"head_sha"`
-	BaseSHA            string          `json:"baseSha" db:"base_sha"`
-	BaseBranch         *string         `json:"baseBranch" db:"base_branch"`
-	HeadBranch         *string         `json:"headBranch" db:"head_branch"`
-	DiffSnapshot       *string         `json:"diffSnapshot,omitempty" db:"diff_snapshot"`
-	FileTree           json.RawMessage `json:"fileTree,omitempty" db:"file_tree"`
+	RepositoryFullName string          `json:"repository_full_name" db:"repository_full_name"`
+	PRNumber           int             `json:"pr_number" db:"pr_number"`
+	PRTitle            *string         `json:"pr_title" db:"pr_title"`
+	PRAuthor           *string         `json:"pr_author" db:"pr_author"`
+	PRURL              *string         `json:"pr_url" db:"pr_url"`
+	HeadSHA            string          `json:"head_sha" db:"head_sha"`
+	BaseSHA            string          `json:"base_sha" db:"base_sha"`
+	BaseBranch         *string         `json:"base_branch" db:"base_branch"`
+	HeadBranch         *string         `json:"head_branch" db:"head_branch"`
+	DiffSnapshot       *string         `json:"diff_snapshot,omitempty" db:"diff_snapshot"`
+	FileTree           json.RawMessage `json:"file_tree,omitempty" db:"file_tree"`
 	Status             ReviewStatus    `json:"status" db:"status"`
-	CompositeReport    *string         `json:"compositeReport,omitempty" db:"composite_report"`
-	OverallVerdict     *Verdict        `json:"overallVerdict" db:"overall_verdict"`
-	TriggerSource      TriggerSource   `json:"triggerSource" db:"trigger_source"`
+	CompositeReport    *string         `json:"composite_report,omitempty" db:"composite_report"`
+	OverallVerdict     *Verdict        `json:"overall_verdict" db:"overall_verdict"`
+	TriggerSource      TriggerSource   `json:"trigger_source" db:"trigger_source"`
 	Metadata           json.RawMessage `json:"metadata,omitempty" db:"metadata"`
-	StartedAt          time.Time       `json:"startedAt" db:"started_at"`
-	CompletedAt        *time.Time      `json:"completedAt" db:"completed_at"`
+	StartedAt          time.Time       `json:"started_at" db:"started_at"`
+	CompletedAt        *time.Time      `json:"completed_at" db:"completed_at"`
 }
 
 type FileEntry struct {
@@ -237,23 +237,23 @@ type FileEntry struct {
 
 type AgentReport struct {
 	ID              string          `json:"id" db:"id"`
-	SessionID       string          `json:"sessionId" db:"session_id"`
-	AgentID         string          `json:"agentId" db:"agent_id"`
-	SkillSlug       string          `json:"skillSlug" db:"skill_slug"`
-	SkillVersion    int             `json:"skillVersion" db:"skill_version"`
-	ModelUsed       string          `json:"modelUsed" db:"model_used"`
-	ProviderName    string          `json:"providerName" db:"provider_name"`
-	PromptHash      string          `json:"promptHash" db:"prompt_hash"`
-	InputTokens     int             `json:"inputTokens" db:"input_tokens"`
-	OutputTokens    int             `json:"outputTokens" db:"output_tokens"`
-	LatencyMs       int             `json:"latencyMs" db:"latency_ms"`
-	CostEstimateUSD *float64        `json:"costEstimateUsd" db:"cost_estimate_usd"`
-	RawResponse     string          `json:"rawResponse" db:"raw_response"`
-	ReportMD        string          `json:"reportMd" db:"report_md"`
-	ChecklistJSON   json.RawMessage `json:"checklistJson" db:"checklist_json"`
+	SessionID       string          `json:"session_id" db:"session_id"`
+	AgentID         string          `json:"agent_id" db:"agent_id"`
+	SkillSlug       string          `json:"skill_slug" db:"skill_slug"`
+	SkillVersion    int             `json:"skill_version" db:"skill_version"`
+	ModelUsed       string          `json:"model_used" db:"model_used"`
+	ProviderName    string          `json:"provider_name" db:"provider_name"`
+	PromptHash      string          `json:"prompt_hash" db:"prompt_hash"`
+	InputTokens     int             `json:"input_tokens" db:"input_tokens"`
+	OutputTokens    int             `json:"output_tokens" db:"output_tokens"`
+	LatencyMs       int             `json:"latency_ms" db:"latency_ms"`
+	CostEstimateUSD *float64        `json:"cost_estimate_usd" db:"cost_estimate_usd"`
+	RawResponse     string          `json:"raw_response" db:"raw_response"`
+	ReportMD        string          `json:"report_md" db:"report_md"`
+	ChecklistJSON   json.RawMessage `json:"checklist_json" db:"checklist_json"`
 	Findings        json.RawMessage `json:"findings" db:"findings"`
 	Verdict         Verdict         `json:"verdict" db:"verdict"`
-	CreatedAt       time.Time       `json:"createdAt" db:"created_at"`
+	CreatedAt       time.Time       `json:"created_at" db:"created_at"`
 }
 
 type ChecklistItem struct {
@@ -276,23 +276,25 @@ type Finding struct {
 // =============================================================================
 
 type ApprovalDecision struct {
-	ID                 string            `json:"id" db:"id"`
-	SessionID          string            `json:"sessionId" db:"session_id"`
-	Decision           DecisionType      `json:"decision" db:"decision"`
-	EngineerID         string            `json:"engineerId" db:"engineer_id"`
-	EngineerName       string            `json:"engineerName" db:"engineer_name"`
-	EngineerEmail      *string           `json:"engineerEmail" db:"engineer_email"`
-	Justification      *string           `json:"justification" db:"justification"`
-	OverriddenVerdicts json.RawMessage   `json:"overriddenVerdicts" db:"overridden_verdicts"`
-	DecidedAt          time.Time         `json:"decidedAt" db:"decided_at"`
+	ID                 string          `json:"id" db:"id"`
+	SessionID          string          `json:"session_id" db:"session_id"`
+	Decision           DecisionType    `json:"decision" db:"decision"`
+	EngineerID         string          `json:"engineer_id" db:"engineer_id"`
+	EngineerName       string          `json:"engineer_name" db:"engineer_name"`
+	EngineerEmail      *string         `json:"engineer_email" db:"engineer_email"`
+	Justification      *string         `json:"justification" db:"justification"`
+	OverriddenVerdicts json.RawMessage `json:"overridden_verdicts" db:"overridden_verdicts"`
+	DecidedAt          time.Time       `json:"decided_at" db:"decided_at"`
 }
 
+// VerdictOverride is sent in POST /api/decisions request bodies so it uses
+// camelCase to match the client convention for request payloads.
 type VerdictOverride struct {
-	AgentReportID  string  `json:"agentReportId"`
-	SkillSlug      string  `json:"skillSlug"`
+	AgentReportID   string  `json:"agentReportId"`
+	SkillSlug       string  `json:"skillSlug"`
 	OriginalVerdict Verdict `json:"originalVerdict"`
-	OverriddenTo   Verdict `json:"overriddenTo"`
-	Reason         string  `json:"reason"`
+	OverriddenTo    Verdict `json:"overriddenTo"`
+	Reason          string  `json:"reason"`
 }
 
 // =============================================================================
@@ -301,14 +303,14 @@ type VerdictOverride struct {
 
 type AuditEntry struct {
 	ID          int64           `json:"id" db:"id"`
-	EventType   AuditEventType  `json:"eventType" db:"event_type"`
-	SessionID   *string         `json:"sessionId" db:"session_id"`
-	AgentID     *string         `json:"agentId" db:"agent_id"`
+	EventType   AuditEventType  `json:"event_type" db:"event_type"`
+	SessionID   *string         `json:"session_id" db:"session_id"`
+	AgentID     *string         `json:"agent_id" db:"agent_id"`
 	Actor       string          `json:"actor" db:"actor"`
 	Payload     json.RawMessage `json:"payload" db:"payload"`
-	PayloadHash *string         `json:"payloadHash,omitempty" db:"payload_hash"`
-	PrevHash    *string         `json:"prevHash,omitempty" db:"prev_hash"`
-	CreatedAt   time.Time       `json:"createdAt" db:"created_at"`
+	PayloadHash *string         `json:"payload_hash,omitempty" db:"payload_hash"`
+	PrevHash    *string         `json:"prev_hash,omitempty" db:"prev_hash"`
+	CreatedAt   time.Time       `json:"created_at" db:"created_at"`
 }
 
 // =============================================================================
@@ -344,22 +346,22 @@ type LLMResponse struct {
 // =============================================================================
 
 type CompositeReport struct {
-	SessionID      string         `json:"sessionId"`
+	SessionID      string         `json:"session_id"`
 	Markdown       string         `json:"markdown"`
-	OverallVerdict Verdict        `json:"overallVerdict"`
-	AgentSummaries []AgentSummary `json:"agentSummaries"`
-	GeneratedAt    time.Time      `json:"generatedAt"`
+	OverallVerdict Verdict        `json:"overall_verdict"`
+	AgentSummaries []AgentSummary `json:"agent_summaries"`
+	GeneratedAt    time.Time      `json:"generated_at"`
 }
 
 type AgentSummary struct {
-	SkillSlug     string  `json:"skillSlug"`
-	SkillName     string  `json:"skillName"`
+	SkillSlug     string  `json:"skill_slug"`
+	SkillName     string  `json:"skill_name"`
 	Verdict       Verdict `json:"verdict"`
-	FindingsCount int     `json:"findingsCount"`
-	CriticalCount int     `json:"criticalCount"`
-	MajorCount    int     `json:"majorCount"`
-	KeyFinding    *string `json:"keyFinding"`
-	LatencyMs     int     `json:"latencyMs"`
+	FindingsCount int     `json:"findings_count"`
+	CriticalCount int     `json:"critical_count"`
+	MajorCount    int     `json:"major_count"`
+	KeyFinding    *string `json:"key_finding"`
+	LatencyMs     int     `json:"latency_ms"`
 }
 
 // =============================================================================

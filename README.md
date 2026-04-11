@@ -21,24 +21,24 @@ Phalanx runs specialised AI agents against every pull request — each evaluatin
 
 ## Quick Start
 
-### Docker Compose (fastest)
-
 ```bash
-cp .env.example .env
-# Edit .env with your API keys
-
+cp .env.example .env        # then edit with your API keys
 docker compose -f deploy/docker-compose.yml up -d
-```
 
-### Build from source
+# (optional) web dashboard at http://localhost:3000
+docker compose -f deploy/docker-compose.yml --profile dashboard up -d
 
-```bash
-# Prerequisites: Go 1.23+, PostgreSQL 16, Redis 7
-make build
-make migrate
+# Seed the built-in skills and LLM providers
 make seed
-make run
+make seed-providers
 ```
+
+**Full documentation** — step-by-step deployment, operations, and development guides — lives in [`docs/`](docs/README.md):
+
+- [Local deployment](docs/deployment-local.md) · [GitHub integration](docs/deployment-github.md) · [GitLab integration](docs/deployment-gitlab.md)
+- [Configuration](docs/configuration.md) — providers, skills, agents, contexts
+- [Usage](docs/usage.md) — triggering reviews, reading reports, decisions, audit trail
+- [Dashboard](docs/dashboard.md) · [Development](docs/development.md)
 
 ### Binary distribution
 

@@ -46,6 +46,10 @@ seed:
 		./bin/phalanx skill register "$$f" --server http://localhost:3100; \
 	done
 
+# Seed LLM providers from config/providers.yaml (requires server running)
+seed-providers:
+	./bin/phalanx provider register config/providers.yaml --server http://localhost:3100
+
 # Docker
 docker-build:
 	docker build -f deploy/Dockerfile -t phalanx .

@@ -66,7 +66,10 @@ func (r *Router) Route(ctx context.Context, req types.LLMRequest, opts *RouteOpt
 
 	maxRetries := provider.Config.MaxRetries
 	if maxRetries == 0 {
-		maxRetries = 2
+		maxRetries = 2 // default; 0 is treated as "unset"
+	}
+	if maxRetries < 0 {
+		maxRetries = 0 // negative means "disable retries"
 	}
 	retryDelay := time.Duration(provider.Config.RetryDelayMs) * time.Millisecond
 	if retryDelay == 0 {
