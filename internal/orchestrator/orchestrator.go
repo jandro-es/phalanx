@@ -178,18 +178,32 @@ func (o *Orchestrator) ExecuteReview(ctx context.Context, session types.ReviewSe
 		 overall_verdict = $2, completed_at = $3 WHERE id = $4`,
 		composite.Markdown, v, now, session.ID)
 
-	// 6. Post to git platform
+	// 6. Post to git platform. A failure here doesn't fail the review (the
+	// reports are already in the DB), but it MUST be observable — previously
+	// we logged report.posted whether or not the call succeeded.
 	if client, ok := o.platforms[session.Platform]; ok {
-		client.PostReview(ctx, session, *composite)
-		o.audit.Log(ctx, audit.Event{
-			EventType: types.AuditReportPosted,
-			SessionID: &session.ID,
-			Actor:     "system",
-			Payload: map[string]any{
-				"platform":       session.Platform,
-				"overallVerdict": composite.OverallVerdict,
-			},
-		})
+		if err := client.PostReview(ctx, session, *composite); err != nil {
+			o.audit.Log(ctx, audit.Event{
+				EventType: types.AuditReportFailed,
+				SessionID: &session.ID,
+				Actor:     "system",
+				Payload: map[string]any{
+					"platform":       session.Platform,
+					"overallVerdict": composite.OverallVerdict,
+					"error":          err.Error(),
+				},
+			})
+		} else {
+			o.audit.Log(ctx, audit.Event{
+				EventType: types.AuditReportPosted,
+				SessionID: &session.ID,
+				Actor:     "system",
+				Payload: map[string]any{
+					"platform":       session.Platform,
+					"overallVerdict": composite.OverallVerdict,
+				},
+			})
+		}
 	}
 
 	o.audit.Log(ctx, audit.Event{

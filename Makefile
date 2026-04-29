@@ -61,11 +61,23 @@ docker-down:
 	docker compose -f deploy/docker-compose.yml down
 
 # Helm
-helm-install:
+helm-package:
+	# Mirror repo-root migrations into the chart so Files.Glob can see them.
+	mkdir -p deploy/helm/phalanx/migrations
+	cp migrations/*.sql deploy/helm/phalanx/migrations/
+	cd deploy/helm && helm dependency update phalanx
+	cd deploy/helm && helm package phalanx
+
+helm-install: helm-package
 	helm install phalanx deploy/helm/phalanx
 
-helm-upgrade:
+helm-upgrade: helm-package
 	helm upgrade phalanx deploy/helm/phalanx
+
+helm-lint:
+	mkdir -p deploy/helm/phalanx/migrations
+	cp migrations/*.sql deploy/helm/phalanx/migrations/
+	helm lint deploy/helm/phalanx
 
 # Clean
 clean:

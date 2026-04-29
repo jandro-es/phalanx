@@ -623,3 +623,38 @@ func countAuditEvents(t *testing.T, pool *pgxpool.Pool, sessionID string) map[st
 
 // avoid unused import warning for encoding/json if we drop its use later
 var _ = json.Marshal
+
+// TestExecuteReview_PostReviewErrorRecordsReportFailed asserts that when the
+// platform client's PostReview returns a non-nil error, the orchestrator
+// emits a `report.failed` audit event AND withholds the `report.posted`
+// event. Previously both happened regardless of outcome (P1.4).
+func TestExecuteReview_PostReviewErrorRecordsReportFailed(t *testing.T) {
+	f := setupOrchestrator(t)
+	f.platform.postReviewErr = errors.New("github 422")
+	f.seedSkillProviderAgent(t, "post-fail-skill", "Post Fail", true)
+
+	f.adapter.responses["post-fail-skill"] = &types.LLMResponse{
+		Content: "**Verdict:** pass\n", Model: "fake-model", InputTokens: 5, OutputTokens: 5,
+	}
+
+	sess := f.insertSession(t, types.PlatformGitHub, 99, "diff")
+	if _, err := f.orch.ExecuteReview(context.Background(), sess); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	counts := countAuditEvents(t, f.pool, sess.ID)
+	if counts["report.failed"] != 1 {
+		t.Errorf("expected 1 report.failed event, got %d (counts=%+v)", counts["report.failed"], counts)
+	}
+	if counts["report.posted"] != 0 {
+		t.Errorf("expected 0 report.posted events on failure, got %d", counts["report.posted"])
+	}
+
+	// The session must still complete — review reports are persisted regardless.
+	var status string
+	_ = f.pool.QueryRow(context.Background(),
+		"SELECT status FROM review_sessions WHERE id = $1", sess.ID).Scan(&status)
+	if status != "completed" {
+		t.Errorf("session status: got %q, want completed (post failure must not abort the review)", status)
+	}
+}

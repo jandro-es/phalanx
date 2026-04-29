@@ -92,6 +92,7 @@ const (
 	AuditLLMError         AuditEventType = "llm.error"
 	AuditLLMFallback      AuditEventType = "llm.fallback"
 	AuditReportPosted     AuditEventType = "report.posted"
+	AuditReportFailed     AuditEventType = "report.failed"
 	AuditDecisionApprove  AuditEventType = "decision.approve"
 	AuditDecisionChanges  AuditEventType = "decision.request_changes"
 	AuditDecisionDefer    AuditEventType = "decision.defer"
@@ -420,4 +421,14 @@ type CreateProviderRequest struct {
 	DefaultModel string         `json:"defaultModel" validate:"required"`
 	Models       []string       `json:"models"`
 	Config       ProviderConfig `json:"config"`
+}
+
+// CreateContextRequest mirrors ContextDocument minus server-managed columns.
+// DocType must be one of `guideline`, `non-negotiable`, `reference`, `example`
+// per the migration's CHECK constraint.
+type CreateContextRequest struct {
+	Name    string   `json:"name" validate:"required"`
+	Content string   `json:"content" validate:"required"`
+	DocType string   `json:"docType" validate:"required,oneof=guideline non-negotiable reference example"`
+	Tags    []string `json:"tags"`
 }

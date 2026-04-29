@@ -72,3 +72,11 @@ PHALANX-README.md
 *.p12
 *.pfx
 secrets/
+
+# --- Helm chart build artefacts ---
+# `make helm-package` mirrors repo-root migrations into the chart so
+# Files.Glob can read them. Don't commit the duplicate.
+deploy/helm/phalanx/migrations/
+deploy/helm/phalanx/charts/
+deploy/helm/phalanx/Chart.lock
+deploy/helm/*.tgz

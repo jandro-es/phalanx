@@ -279,9 +279,13 @@ PHALANX_TEST_DATABASE_URL=... go test ./internal/api -race -count=1
 
 ### What's still not covered
 
-- **`internal/queue`** — asynq itself has upstream tests; our wrapper is mechanical (parse URL, marshal task, call asynq). A miniredis-based test would be ~40 lines and is a reasonable TODO.
 - **`cmd/cli` and `cmd/server`** — pure glue code, testing them is low-value compared to end-to-end testing via `make build && ./bin/phalanx-server` + `./bin/phalanx review`.
-- **Webhook signature verification** — the handlers don't verify `GITHUB_WEBHOOK_SECRET` / `GITLAB_WEBHOOK_SECRET` today. When that's added, add tests alongside.
+
+### Recently filled gaps
+
+- **`internal/queue`** — miniredis-backed tests cover enqueue → worker dispatch, and that a handler error doesn't kill the worker. The full retry scheduler runs on >1s intervals so retry timing is deferred to integration coverage rather than asserted in unit time.
+- **Webhook signature verification** — `internal/api/auth_test.go` covers `VerifyGitHubSignature` (HMAC, success/missing/invalid-hex/wrong-digest), `VerifyGitLabToken` (constant-time match), and an end-to-end 401 reject through `Handler.Routes()`.
+- **Bearer-token auth** — `internal/api/auth_test.go` covers no-token open path, missing/invalid headers, multiple-token configs, OPTIONS preflight bypass, and skip-prefix bypass for webhooks/health.
 
 When adding new code to a covered package, please add tests. When adding code to an uncovered one, please add the first one for it.
 

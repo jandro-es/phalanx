@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
 	"strconv"
 	"time"
 
@@ -25,6 +26,16 @@ type Handler struct {
 	DB       *pgxpool.Pool
 	Audit    *audit.Logger
 	Enqueuer ReviewEnqueuer
+
+	// GitHubWebhookSecret / GitLabWebhookSecret / BitbucketWebhookUUID are
+	// HMAC / shared secrets used to authenticate inbound webhook deliveries.
+	// Empty disables verification.
+	//
+	// Bitbucket Cloud signs webhooks with a per-webhook UUID delivered as
+	// `X-Hook-UUID`; we treat it as a shared secret like GitLab's token.
+	GitHubWebhookSecret string
+	GitLabWebhookSecret string
+	BitbucketWebhookUUID string
 }
 
 // Routes returns a chi.Router with all API routes mounted.
@@ -35,6 +46,7 @@ func (h *Handler) Routes() chi.Router {
 		// Webhooks
 		r.Post("/webhooks/github", h.githubWebhook)
 		r.Post("/webhooks/gitlab", h.gitlabWebhook)
+		r.Post("/webhooks/bitbucket", h.bitbucketWebhook)
 
 		// Reviews
 		r.Post("/reviews", h.triggerReview)
@@ -65,6 +77,13 @@ func (h *Handler) Routes() chi.Router {
 		r.Post("/providers", h.createProvider)
 		r.Put("/providers/{id}", h.updateProvider)
 
+		// Context documents
+		r.Get("/contexts", h.listContexts)
+		r.Post("/contexts", h.createContext)
+		r.Get("/contexts/{id}", h.getContext)
+		r.Put("/contexts/{id}", h.updateContext)
+		r.Delete("/contexts/{id}", h.deleteContext)
+
 		// Audit
 		r.Get("/audit", h.queryAudit)
 		r.Get("/audit/session/{sessionID}", h.sessionAuditTrail)
@@ -82,6 +101,16 @@ func (h *Handler) Routes() chi.Router {
 // ==========================================================================
 
 func (h *Handler) githubWebhook(w http.ResponseWriter, r *http.Request) {
+	body, err := readAndRestore(r)
+	if err != nil {
+		writeJSON(w, 400, map[string]string{"error": "failed to read body"})
+		return
+	}
+	if err := VerifyGitHubSignature(h.GitHubWebhookSecret, body, r.Header.Get("X-Hub-Signature-256")); err != nil {
+		writeJSON(w, 401, map[string]string{"error": err.Error()})
+		return
+	}
+
 	var payload struct {
 		Action      string `json:"action"`
 		Number      int    `json:"number"`
@@ -132,6 +161,11 @@ func (h *Handler) githubWebhook(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) gitlabWebhook(w http.ResponseWriter, r *http.Request) {
+	if err := VerifyGitLabToken(h.GitLabWebhookSecret, r.Header.Get("X-Gitlab-Token")); err != nil {
+		writeJSON(w, 401, map[string]string{"error": err.Error()})
+		return
+	}
+
 	var payload struct {
 		ObjectKind string `json:"object_kind"`
 		ObjectAttributes struct {
@@ -166,6 +200,64 @@ func (h *Handler) gitlabWebhook(w http.ResponseWriter, r *http.Request) {
 		BaseSHA:            "",
 		HeadBranch:         &payload.ObjectAttributes.SourceBranch,
 		BaseBranch:         &payload.ObjectAttributes.TargetBranch,
+		TriggerSource:      types.TriggerWebhook,
+		Status:             types.StatusQueued,
+	})
+
+	if err := h.Enqueuer.EnqueueReview(r.Context(), session); err != nil {
+		writeJSON(w, 500, map[string]string{"error": "failed to enqueue: " + err.Error()})
+		return
+	}
+	writeJSON(w, 202, map[string]any{"sessionId": session.ID, "status": "queued"})
+}
+
+// bitbucketWebhook handles Bitbucket Cloud `pullrequest:created` and
+// `pullrequest:updated` events. Bitbucket signs each delivery with an
+// X-Hook-UUID matching the webhook's configured UUID.
+func (h *Handler) bitbucketWebhook(w http.ResponseWriter, r *http.Request) {
+	if err := VerifyGitLabToken(h.BitbucketWebhookUUID, r.Header.Get("X-Hook-UUID")); err != nil {
+		writeJSON(w, 401, map[string]string{"error": err.Error()})
+		return
+	}
+
+	var payload struct {
+		PullRequest struct {
+			ID          int    `json:"id"`
+			Title       string `json:"title"`
+			Links       struct {
+				HTML struct{ Href string } `json:"html"`
+			} `json:"links"`
+			Author struct{ Username string } `json:"author"`
+			Source struct {
+				Branch struct{ Name string } `json:"branch"`
+				Commit struct{ Hash string } `json:"commit"`
+			} `json:"source"`
+			Destination struct {
+				Branch struct{ Name string } `json:"branch"`
+				Commit struct{ Hash string } `json:"commit"`
+			} `json:"destination"`
+		} `json:"pullrequest"`
+		Repository struct {
+			FullName string `json:"full_name"`
+		} `json:"repository"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeJSON(w, 400, map[string]string{"error": "invalid payload"})
+		return
+	}
+
+	session := h.createSession(r.Context(), types.ReviewSession{
+		ExternalPRID:       fmt.Sprintf("bitbucket:%s#%d", payload.Repository.FullName, payload.PullRequest.ID),
+		Platform:           types.PlatformBitbucket,
+		RepositoryFullName: payload.Repository.FullName,
+		PRNumber:           payload.PullRequest.ID,
+		PRTitle:            &payload.PullRequest.Title,
+		PRAuthor:           &payload.PullRequest.Author.Username,
+		PRURL:              &payload.PullRequest.Links.HTML.Href,
+		HeadSHA:            payload.PullRequest.Source.Commit.Hash,
+		BaseSHA:            payload.PullRequest.Destination.Commit.Hash,
+		HeadBranch:         &payload.PullRequest.Source.Branch.Name,
+		BaseBranch:         &payload.PullRequest.Destination.Branch.Name,
 		TriggerSource:      types.TriggerWebhook,
 		Status:             types.StatusQueued,
 	})
@@ -388,8 +480,45 @@ func (h *Handler) listSessions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"sessions": sessions, "limit": limit, "offset": offset})
 }
 
+// rerunReview re-enqueues an existing session for review. Any prior agent
+// reports are deleted (the orchestrator inserts fresh rows) and the session is
+// reset to "queued". The diff snapshot is preserved so reruns evaluate the
+// exact same code; if the user wants the latest commits they should trigger a
+// fresh review instead.
 func (h *Handler) rerunReview(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 202, map[string]string{"status": "queued"})
+	id := chi.URLParam(r, "sessionID")
+
+	session, err := h.scanSessionRow(r.Context(), id)
+	if err != nil {
+		writeJSON(w, 404, map[string]string{"error": "session not found"})
+		return
+	}
+
+	if _, err := h.DB.Exec(r.Context(), "DELETE FROM agent_reports WHERE session_id = $1", id); err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	if _, err := h.DB.Exec(r.Context(),
+		`UPDATE review_sessions SET status = 'queued', composite_report = NULL,
+		  overall_verdict = NULL, completed_at = NULL WHERE id = $1`, id); err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+
+	session.Status = types.StatusQueued
+	if err := h.Enqueuer.EnqueueReview(r.Context(), *session); err != nil {
+		writeJSON(w, 500, map[string]string{"error": "failed to enqueue: " + err.Error()})
+		return
+	}
+
+	h.Audit.Log(r.Context(), audit.Event{
+		EventType: types.AuditSessionQueued,
+		SessionID: &id,
+		Actor:     "api",
+		Payload:   map[string]any{"action": "rerun"},
+	})
+
+	writeJSON(w, 202, map[string]any{"sessionId": id, "status": "queued"})
 }
 
 // ==========================================================================
@@ -558,11 +687,149 @@ func (h *Handler) createAgent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 201, map[string]string{"id": id})
 }
 
-func (h *Handler) getAgent(w http.ResponseWriter, r *http.Request)    { writeJSON(w, 200, map[string]any{}) }
-func (h *Handler) updateAgent(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, map[string]any{"updated": true}) }
+func (h *Handler) getAgent(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+
+	var name, skillSlug, skillName, provName string
+	var skillID, providerID string
+	var modelOverride *string
+	var enabled bool
+	var priority, maxTokens int
+	var temperature float64
+	var configRaw json.RawMessage
+
+	err := h.DB.QueryRow(r.Context(), `
+		SELECT a.id, a.name, a.skill_id, a.provider_id, a.model_override,
+		       a.temperature, a.max_tokens, a.enabled, a.priority, a.config,
+		       s.slug, s.name, p.name
+		FROM agents a
+		JOIN skills s ON a.skill_id = s.id
+		JOIN llm_providers p ON a.provider_id = p.id
+		WHERE a.id = $1`, id,
+	).Scan(&id, &name, &skillID, &providerID, &modelOverride,
+		&temperature, &maxTokens, &enabled, &priority, &configRaw,
+		&skillSlug, &skillName, &provName)
+	if err != nil {
+		writeJSON(w, 404, map[string]string{"error": "agent not found"})
+		return
+	}
+
+	// Eager-load context IDs so the dashboard can render the binding.
+	contextIDs := []string{}
+	rows, err := h.DB.Query(r.Context(),
+		"SELECT context_id FROM agent_context WHERE agent_id = $1", id)
+	if err == nil {
+		for rows.Next() {
+			var cid string
+			if err := rows.Scan(&cid); err == nil {
+				contextIDs = append(contextIDs, cid)
+			}
+		}
+		rows.Close()
+	}
+
+	writeJSON(w, 200, map[string]any{
+		"id":             id,
+		"name":           name,
+		"skill_id":       skillID,
+		"provider_id":    providerID,
+		"model_override": modelOverride,
+		"temperature":    temperature,
+		"max_tokens":     maxTokens,
+		"enabled":        enabled,
+		"priority":       priority,
+		"config":         configRaw,
+		"skill_slug":     skillSlug,
+		"skill_name":     skillName,
+		"provider_name":  provName,
+		"context_ids":    contextIDs,
+	})
+}
+
+func (h *Handler) updateAgent(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+
+	// Optional fields — only the ones present in the body get patched.
+	var req struct {
+		Name          *string             `json:"name"`
+		ModelOverride *string             `json:"modelOverride"`
+		Temperature   *float64            `json:"temperature"`
+		MaxTokens     *int                `json:"maxTokens"`
+		Enabled       *bool               `json:"enabled"`
+		Priority      *int                `json:"priority"`
+		Config        *types.AgentConfig  `json:"config"`
+		ContextIDs    *[]string           `json:"contextIds"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, 400, map[string]string{"error": "invalid JSON: " + err.Error()})
+		return
+	}
+
+	// Build a partial UPDATE using COALESCE so callers can patch any subset.
+	tag, err := h.DB.Exec(r.Context(), `
+		UPDATE agents SET
+		  name           = COALESCE($2, name),
+		  model_override = COALESCE($3, model_override),
+		  temperature    = COALESCE($4, temperature),
+		  max_tokens     = COALESCE($5, max_tokens),
+		  enabled        = COALESCE($6, enabled),
+		  priority       = COALESCE($7, priority),
+		  config         = COALESCE($8::jsonb, config),
+		  updated_at     = now()
+		WHERE id = $1`,
+		id, req.Name, req.ModelOverride, req.Temperature, req.MaxTokens,
+		req.Enabled, req.Priority, jsonOrNil(req.Config),
+	)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeJSON(w, 404, map[string]string{"error": "agent not found"})
+		return
+	}
+
+	if req.ContextIDs != nil {
+		// Re-bind contexts atomically: delete + re-insert. agent_context is
+		// a small join table with no other state.
+		if _, err := h.DB.Exec(r.Context(), "DELETE FROM agent_context WHERE agent_id = $1", id); err != nil {
+			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
+		for _, cid := range *req.ContextIDs {
+			if _, err := h.DB.Exec(r.Context(),
+				"INSERT INTO agent_context (agent_id, context_id) VALUES ($1,$2)", id, cid); err != nil {
+				writeJSON(w, 500, map[string]string{"error": err.Error()})
+				return
+			}
+		}
+	}
+
+	h.Audit.Log(r.Context(), audit.Event{
+		EventType: types.AuditConfigUpdated,
+		AgentID:   &id,
+		Actor:     "api",
+		Payload:   map[string]any{"id": id},
+	})
+	writeJSON(w, 200, map[string]any{"updated": true, "id": id})
+}
 func (h *Handler) disableAgent(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	h.DB.Exec(r.Context(), "UPDATE agents SET enabled = false WHERE id = $1", id)
+	tag, err := h.DB.Exec(r.Context(), "UPDATE agents SET enabled = false, updated_at = now() WHERE id = $1", id)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeJSON(w, 404, map[string]string{"error": "agent not found"})
+		return
+	}
+	h.Audit.Log(r.Context(), audit.Event{
+		EventType: types.AuditConfigUpdated,
+		AgentID:   &id,
+		Actor:     "api",
+		Payload:   map[string]any{"action": "disable"},
+	})
 	writeJSON(w, 200, map[string]any{"disabled": true})
 }
 
@@ -652,7 +919,62 @@ func (h *Handler) getSkill(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *Handler) updateSkill(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, map[string]any{"updated": true}) }
+// updateSkill upserts the skill identified by slug. If the body specifies a
+// version that already exists, that version row is updated in place; otherwise
+// a new version row is inserted (skills are versioned by `(slug, version)`).
+func (h *Handler) updateSkill(w http.ResponseWriter, r *http.Request) {
+	slug := chi.URLParam(r, "slug")
+
+	var req types.CreateSkillRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, 400, map[string]string{"error": "invalid JSON: " + err.Error()})
+		return
+	}
+	// The URL param wins so callers can't rename a skill via PUT (rename means
+	// "register a new skill").
+	req.Slug = slug
+	if req.Name == "" || req.SystemPrompt == "" || req.ChecklistTemplate == "" {
+		writeJSON(w, 400, map[string]string{"error": "name, systemPrompt, and checklistTemplate are required"})
+		return
+	}
+	if req.Version <= 0 {
+		// Default to the next version number for this slug.
+		var maxV int
+		_ = h.DB.QueryRow(r.Context(),
+			"SELECT COALESCE(MAX(version), 0) FROM skills WHERE slug = $1", slug).Scan(&maxV)
+		req.Version = maxV + 1
+	}
+	if req.Tags == nil {
+		req.Tags = []string{}
+	}
+
+	var id string
+	err := h.DB.QueryRow(r.Context(),
+		`INSERT INTO skills (slug, name, version, system_prompt, checklist_template, output_schema, tags, is_builtin)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+		 ON CONFLICT (slug, version) DO UPDATE SET
+		   name = EXCLUDED.name,
+		   system_prompt = EXCLUDED.system_prompt,
+		   checklist_template = EXCLUDED.checklist_template,
+		   output_schema = EXCLUDED.output_schema,
+		   tags = EXCLUDED.tags,
+		   updated_at = now()
+		 RETURNING id`,
+		req.Slug, req.Name, req.Version, req.SystemPrompt, req.ChecklistTemplate,
+		req.OutputSchema, req.Tags, false,
+	).Scan(&id)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+
+	h.Audit.Log(r.Context(), audit.Event{
+		EventType: types.AuditSkillUpdated,
+		Actor:     "api",
+		Payload:   map[string]any{"slug": req.Slug, "version": req.Version},
+	})
+	writeJSON(w, 200, map[string]any{"id": id, "slug": slug, "version": req.Version, "updated": true})
+}
 
 // ==========================================================================
 // Providers CRUD
@@ -722,7 +1044,221 @@ func (h *Handler) createProvider(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 201, map[string]any{"id": id, "name": req.Name})
 }
 
-func (h *Handler) updateProvider(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, map[string]any{"updated": true}) }
+// updateProvider patches the provider row identified by id. Unset fields are
+// preserved so callers can change just the model or rate limit without
+// re-sending the full provider config.
+func (h *Handler) updateProvider(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+
+	var req struct {
+		Name         *string               `json:"name"`
+		BaseURL      *string               `json:"baseUrl"`
+		AuthMethod   *types.AuthMethod     `json:"authMethod"`
+		APIKeyRef    *string               `json:"apiKeyRef"`
+		DefaultModel *string               `json:"defaultModel"`
+		Models       *[]string             `json:"models"`
+		Config       *types.ProviderConfig `json:"config"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, 400, map[string]string{"error": "invalid JSON: " + err.Error()})
+		return
+	}
+
+	tag, err := h.DB.Exec(r.Context(), `
+		UPDATE llm_providers SET
+		  name          = COALESCE($2, name),
+		  base_url      = COALESCE($3, base_url),
+		  auth_method   = COALESCE($4, auth_method),
+		  api_key_ref   = COALESCE($5, api_key_ref),
+		  default_model = COALESCE($6, default_model),
+		  models        = COALESCE($7, models),
+		  config        = COALESCE($8::jsonb, config),
+		  updated_at    = now()
+		WHERE id = $1`,
+		id, req.Name, req.BaseURL, req.AuthMethod, req.APIKeyRef,
+		req.DefaultModel, req.Models, jsonOrNil(req.Config),
+	)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeJSON(w, 404, map[string]string{"error": "provider not found"})
+		return
+	}
+
+	h.Audit.Log(r.Context(), audit.Event{
+		EventType: types.AuditProviderUpdated,
+		Actor:     "api",
+		Payload:   map[string]any{"id": id},
+	})
+	writeJSON(w, 200, map[string]any{"updated": true, "id": id})
+}
+
+// ==========================================================================
+// Context documents
+// ==========================================================================
+
+func (h *Handler) listContexts(w http.ResponseWriter, r *http.Request) {
+	rows, err := h.DB.Query(r.Context(),
+		`SELECT id, name, doc_type, tags, created_at FROM context_documents ORDER BY name`)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+
+	out := []map[string]any{}
+	for rows.Next() {
+		var id, name, docType string
+		var tags []string
+		var createdAt time.Time
+		if err := rows.Scan(&id, &name, &docType, &tags, &createdAt); err != nil {
+			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
+		if tags == nil {
+			tags = []string{}
+		}
+		out = append(out, map[string]any{
+			"id": id, "name": name, "doc_type": docType,
+			"tags": tags, "created_at": createdAt,
+		})
+	}
+	// listContexts intentionally omits `content` so the dashboard's index
+	// stays small. Use GET /api/contexts/{id} to fetch the body.
+	writeJSON(w, 200, map[string]any{"contexts": out})
+}
+
+func (h *Handler) getContext(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var c types.ContextDocument
+	err := h.DB.QueryRow(r.Context(),
+		`SELECT id, name, content, doc_type, tags, created_at
+		 FROM context_documents WHERE id = $1`, id,
+	).Scan(&c.ID, &c.Name, &c.Content, &c.DocType, &c.Tags, &c.CreatedAt)
+	if err != nil {
+		writeJSON(w, 404, map[string]string{"error": "context not found"})
+		return
+	}
+	if c.Tags == nil {
+		c.Tags = []string{}
+	}
+	writeJSON(w, 200, c)
+}
+
+func (h *Handler) createContext(w http.ResponseWriter, r *http.Request) {
+	var req types.CreateContextRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, 400, map[string]string{"error": "invalid JSON: " + err.Error()})
+		return
+	}
+	if req.Name == "" || req.Content == "" || req.DocType == "" {
+		writeJSON(w, 400, map[string]string{"error": "name, content, and docType are required"})
+		return
+	}
+	if !validDocType(req.DocType) {
+		writeJSON(w, 400, map[string]string{"error": "docType must be guideline|non-negotiable|reference|example"})
+		return
+	}
+	if req.Tags == nil {
+		req.Tags = []string{}
+	}
+
+	var id string
+	err := h.DB.QueryRow(r.Context(),
+		`INSERT INTO context_documents (name, content, doc_type, tags)
+		 VALUES ($1,$2,$3,$4) RETURNING id`,
+		req.Name, req.Content, req.DocType, req.Tags,
+	).Scan(&id)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+
+	h.Audit.Log(r.Context(), audit.Event{
+		EventType: types.AuditConfigCreated,
+		Actor:     "api",
+		Payload:   map[string]any{"resource": "context", "id": id, "name": req.Name},
+	})
+	writeJSON(w, 201, map[string]any{"id": id, "name": req.Name})
+}
+
+func (h *Handler) updateContext(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+
+	var req struct {
+		Name    *string   `json:"name"`
+		Content *string   `json:"content"`
+		DocType *string   `json:"docType"`
+		Tags    *[]string `json:"tags"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, 400, map[string]string{"error": "invalid JSON: " + err.Error()})
+		return
+	}
+	if req.DocType != nil && !validDocType(*req.DocType) {
+		writeJSON(w, 400, map[string]string{"error": "docType must be guideline|non-negotiable|reference|example"})
+		return
+	}
+
+	tag, err := h.DB.Exec(r.Context(), `
+		UPDATE context_documents SET
+		  name     = COALESCE($2, name),
+		  content  = COALESCE($3, content),
+		  doc_type = COALESCE($4, doc_type),
+		  tags     = COALESCE($5, tags)
+		WHERE id = $1`,
+		id, req.Name, req.Content, req.DocType, req.Tags,
+	)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeJSON(w, 404, map[string]string{"error": "context not found"})
+		return
+	}
+	h.Audit.Log(r.Context(), audit.Event{
+		EventType: types.AuditConfigUpdated,
+		Actor:     "api",
+		Payload:   map[string]any{"resource": "context", "id": id},
+	})
+	writeJSON(w, 200, map[string]any{"updated": true, "id": id})
+}
+
+func (h *Handler) deleteContext(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	// Cascade-delete the m:n bindings; the document's only consumers are
+	// agents via agent_context, so this is safe.
+	if _, err := h.DB.Exec(r.Context(), "DELETE FROM agent_context WHERE context_id = $1", id); err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	tag, err := h.DB.Exec(r.Context(), "DELETE FROM context_documents WHERE id = $1", id)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeJSON(w, 404, map[string]string{"error": "context not found"})
+		return
+	}
+	h.Audit.Log(r.Context(), audit.Event{
+		EventType: types.AuditConfigUpdated,
+		Actor:     "api",
+		Payload:   map[string]any{"resource": "context", "id": id, "action": "delete"},
+	})
+	writeJSON(w, 200, map[string]any{"deleted": true})
+}
+
+func validDocType(s string) bool {
+	switch s {
+	case "guideline", "non-negotiable", "reference", "example":
+		return true
+	}
+	return false
+}
 
 // ==========================================================================
 // Audit
@@ -813,6 +1349,20 @@ func mustJSON(v any) []byte {
 	return b
 }
 
+// jsonOrNil returns nil when v is a nil pointer (so the caller's COALESCE-based
+// UPDATE preserves the existing column) and the marshalled bytes otherwise.
+func jsonOrNil(v any) []byte {
+	if v == nil {
+		return nil
+	}
+	rv := reflect.ValueOf(v)
+	if rv.Kind() == reflect.Ptr && rv.IsNil() {
+		return nil
+	}
+	b, _ := json.Marshal(v)
+	return b
+}
+
 func (h *Handler) createSession(ctx context.Context, s types.ReviewSession) types.ReviewSession {
 	row := h.DB.QueryRow(ctx,
 		`INSERT INTO review_sessions
@@ -835,9 +1385,4 @@ func (h *Handler) createSession(ctx context.Context, s types.ReviewSession) type
 	})
 
 	return s
-}
-
-func scanSession(_ any, _ *types.ReviewSession) error {
-	// Placeholder — production uses proper pgx row scanning
-	return nil
 }

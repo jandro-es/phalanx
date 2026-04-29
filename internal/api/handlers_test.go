@@ -870,3 +870,358 @@ func insertProvider(t *testing.T, pool *pgxpool.Pool, name string) string {
 	}
 	return id
 }
+
+// --- Agent CRUD (P1.1) ---
+
+func TestUpdateAgent_PatchesPartialFields(t *testing.T) {
+	h, _, pool := newTestHandler(t)
+	routes := h.Routes()
+
+	skillID := insertSkill(t, pool, "patch-skill")
+	provID := insertProvider(t, pool, "patch-prov")
+
+	rr := do(t, routes, "POST", "/api/agents", map[string]any{
+		"name": "orig", "skillId": skillID, "providerId": provID,
+		"temperature": 0.1, "maxTokens": 2048, "enabled": true, "priority": 50,
+	})
+	if rr.Code != 201 {
+		t.Fatalf("create: %d %s", rr.Code, rr.Body.String())
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	decode(t, rr, &created)
+
+	// Patch only temperature + priority.
+	rr = do(t, routes, "PUT", "/api/agents/"+created.ID, map[string]any{
+		"temperature": 0.7,
+		"priority":    10,
+	})
+	if rr.Code != 200 {
+		t.Fatalf("patch: %d %s", rr.Code, rr.Body.String())
+	}
+
+	// Fields outside the patch body must be preserved.
+	var name string
+	var temp float64
+	var prio, maxTok int
+	var enabled bool
+	err := pool.QueryRow(context.Background(),
+		"SELECT name, temperature, priority, max_tokens, enabled FROM agents WHERE id = $1", created.ID,
+	).Scan(&name, &temp, &prio, &maxTok, &enabled)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if name != "orig" || temp < 0.69 || temp > 0.71 || prio != 10 || maxTok != 2048 || !enabled {
+		t.Errorf("patch did not preserve untouched fields: name=%q temp=%v prio=%d maxTok=%d enabled=%v",
+			name, temp, prio, maxTok, enabled)
+	}
+}
+
+func TestUpdateAgent_NotFound(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	rr := do(t, h.Routes(), "PUT",
+		"/api/agents/00000000-0000-0000-0000-000000000000",
+		map[string]any{"temperature": 0.5})
+	if rr.Code != 404 {
+		t.Fatalf("missing agent should be 404, got %d", rr.Code)
+	}
+}
+
+func TestGetAgent_RoundTrip(t *testing.T) {
+	h, _, pool := newTestHandler(t)
+	routes := h.Routes()
+
+	skillID := insertSkill(t, pool, "get-skill")
+	provID := insertProvider(t, pool, "get-prov")
+
+	rr := do(t, routes, "POST", "/api/agents", map[string]any{
+		"name": "named", "skillId": skillID, "providerId": provID,
+		"temperature": 0.2, "maxTokens": 1024, "enabled": true, "priority": 5,
+	})
+	if rr.Code != 201 {
+		t.Fatalf("create: %d", rr.Code)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	decode(t, rr, &created)
+
+	rr = do(t, routes, "GET", "/api/agents/"+created.ID, nil)
+	if rr.Code != 200 {
+		t.Fatalf("get: %d %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	decode(t, rr, &got)
+	if got["name"] != "named" || got["skill_slug"] != "get-skill" || got["provider_name"] != "get-prov" {
+		t.Errorf("unexpected agent: %+v", got)
+	}
+}
+
+func TestDisableAgent_FlagsRow(t *testing.T) {
+	h, _, pool := newTestHandler(t)
+	routes := h.Routes()
+
+	skillID := insertSkill(t, pool, "dis-skill")
+	provID := insertProvider(t, pool, "dis-prov")
+
+	rr := do(t, routes, "POST", "/api/agents", map[string]any{
+		"name": "x", "skillId": skillID, "providerId": provID,
+		"enabled": true, "priority": 1,
+	})
+	var created struct {
+		ID string `json:"id"`
+	}
+	decode(t, rr, &created)
+
+	rr = do(t, routes, "DELETE", "/api/agents/"+created.ID, nil)
+	if rr.Code != 200 {
+		t.Fatalf("delete: %d", rr.Code)
+	}
+	var enabled bool
+	_ = pool.QueryRow(context.Background(),
+		"SELECT enabled FROM agents WHERE id = $1", created.ID).Scan(&enabled)
+	if enabled {
+		t.Errorf("expected enabled=false after DELETE, still true")
+	}
+}
+
+// --- Skill update (P1.1) ---
+
+func TestUpdateSkill_BumpsVersion(t *testing.T) {
+	h, _, pool := newTestHandler(t)
+	routes := h.Routes()
+
+	// Seed v1.
+	rr := do(t, routes, "POST", "/api/skills", map[string]any{
+		"slug": "evolving", "name": "v1", "version": 1,
+		"systemPrompt": "p1", "checklistTemplate": "c1",
+	})
+	if rr.Code != 201 {
+		t.Fatalf("seed: %d", rr.Code)
+	}
+
+	// PUT without version → server picks next.
+	rr = do(t, routes, "PUT", "/api/skills/evolving", map[string]any{
+		"name":              "v2",
+		"systemPrompt":      "p2",
+		"checklistTemplate": "c2",
+	})
+	if rr.Code != 200 {
+		t.Fatalf("put: %d %s", rr.Code, rr.Body.String())
+	}
+
+	var versions []int
+	rows, err := pool.Query(context.Background(),
+		"SELECT version FROM skills WHERE slug = 'evolving' ORDER BY version")
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var v int
+		_ = rows.Scan(&v)
+		versions = append(versions, v)
+	}
+	if len(versions) != 2 || versions[0] != 1 || versions[1] != 2 {
+		t.Errorf("expected versions [1,2], got %v", versions)
+	}
+}
+
+// --- Provider update (P1.1) ---
+
+func TestUpdateProvider_PreservesUnsetFields(t *testing.T) {
+	h, _, pool := newTestHandler(t)
+	routes := h.Routes()
+
+	provID := insertProvider(t, pool, "evolving-prov")
+
+	rr := do(t, routes, "PUT", "/api/providers/"+provID, map[string]any{
+		"defaultModel": "new-model",
+	})
+	if rr.Code != 200 {
+		t.Fatalf("put: %d %s", rr.Code, rr.Body.String())
+	}
+
+	var name, model, baseURL string
+	_ = pool.QueryRow(context.Background(),
+		"SELECT name, base_url, default_model FROM llm_providers WHERE id = $1", provID,
+	).Scan(&name, &baseURL, &model)
+	if name != "evolving-prov" {
+		t.Errorf("name should be preserved: %q", name)
+	}
+	if baseURL != "https://x" {
+		t.Errorf("base_url should be preserved: %q", baseURL)
+	}
+	if model != "new-model" {
+		t.Errorf("default_model not updated: %q", model)
+	}
+}
+
+// --- Rerun review (P1.1) ---
+
+func TestRerunReview_ResetsAndEnqueues(t *testing.T) {
+	h, enq, pool := newTestHandler(t)
+	routes := h.Routes()
+
+	// Seed a completed session with a stale agent report.
+	var sessionID string
+	err := pool.QueryRow(context.Background(), `
+		INSERT INTO review_sessions
+		  (external_pr_id, platform, repository_full_name, pr_number,
+		   head_sha, base_sha, trigger_source, status, overall_verdict,
+		   composite_report, completed_at)
+		VALUES ('github:x#1','github','x',1,'h','b','api','completed','pass','old',now())
+		RETURNING id`,
+	).Scan(&sessionID)
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Need an agent + report so we can verify the report is wiped.
+	skillID := insertSkill(t, pool, "rerun-skill")
+	provID := insertProvider(t, pool, "rerun-prov")
+	var agentID string
+	_ = pool.QueryRow(context.Background(), `
+		INSERT INTO agents (name, skill_id, provider_id, enabled)
+		VALUES ('a',$1,$2,true) RETURNING id`, skillID, provID).Scan(&agentID)
+	_, _ = pool.Exec(context.Background(), `
+		INSERT INTO agent_reports
+		  (session_id, agent_id, skill_slug, skill_version, model_used, provider_name,
+		   prompt_hash, verdict, report_md)
+		VALUES ($1,$2,'rerun-skill',1,'m','rerun-prov','h','pass','old')`, sessionID, agentID)
+
+	rr := do(t, routes, "POST", "/api/reviews/"+sessionID+"/rerun", nil)
+	if rr.Code != 202 {
+		t.Fatalf("rerun: %d %s", rr.Code, rr.Body.String())
+	}
+
+	if len(enq.Calls()) != 1 || enq.Calls()[0].ID != sessionID {
+		t.Fatalf("expected one re-enqueue for %s, got %+v", sessionID, enq.Calls())
+	}
+
+	var status string
+	var verdict, composite *string
+	var completedAt *string
+	_ = pool.QueryRow(context.Background(),
+		`SELECT status, overall_verdict, composite_report, completed_at::text
+		 FROM review_sessions WHERE id = $1`, sessionID,
+	).Scan(&status, &verdict, &composite, &completedAt)
+	if status != "queued" {
+		t.Errorf("status should be queued, got %q", status)
+	}
+	if verdict != nil || composite != nil || completedAt != nil {
+		t.Errorf("rerun should clear verdict/composite/completed_at")
+	}
+
+	var reportCount int
+	_ = pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM agent_reports WHERE session_id = $1", sessionID,
+	).Scan(&reportCount)
+	if reportCount != 0 {
+		t.Errorf("agent_reports should be wiped, got %d", reportCount)
+	}
+}
+
+func TestRerunReview_NotFound(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	rr := do(t, h.Routes(), "POST",
+		"/api/reviews/00000000-0000-0000-0000-000000000000/rerun", nil)
+	if rr.Code != 404 {
+		t.Fatalf("missing session should be 404, got %d", rr.Code)
+	}
+}
+
+// --- Context documents (P1.3) ---
+
+func TestCreateContext_Validation(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	cases := []struct {
+		name       string
+		body       any
+		wantStatus int
+	}{
+		{"empty", "{}", 400},
+		{"missing docType", map[string]any{"name": "x", "content": "c"}, 400},
+		{"bad docType", map[string]any{"name": "x", "content": "c", "docType": "wat"}, 400},
+		{"valid", map[string]any{
+			"name": "Convention", "content": "do this", "docType": "guideline",
+			"tags": []string{"golang"},
+		}, 201},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			rr := do(t, h.Routes(), "POST", "/api/contexts", c.body)
+			if rr.Code != c.wantStatus {
+				t.Errorf("status: got %d, want %d (%s)", rr.Code, c.wantStatus, rr.Body.String())
+			}
+		})
+	}
+}
+
+func TestContext_RoundTripGetUpdateDelete(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	routes := h.Routes()
+
+	rr := do(t, routes, "POST", "/api/contexts", map[string]any{
+		"name": "Initial", "content": "v1", "docType": "guideline",
+		"tags": []string{"a"},
+	})
+	if rr.Code != 201 {
+		t.Fatalf("create: %d %s", rr.Code, rr.Body.String())
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	decode(t, rr, &created)
+
+	// GET
+	rr = do(t, routes, "GET", "/api/contexts/"+created.ID, nil)
+	if rr.Code != 200 {
+		t.Fatalf("get: %d", rr.Code)
+	}
+	var got map[string]any
+	decode(t, rr, &got)
+	if got["name"] != "Initial" || got["content"] != "v1" || got["doc_type"] != "guideline" {
+		t.Errorf("unexpected payload: %+v", got)
+	}
+
+	// PUT (partial)
+	rr = do(t, routes, "PUT", "/api/contexts/"+created.ID, map[string]any{
+		"content": "v2",
+	})
+	if rr.Code != 200 {
+		t.Fatalf("put: %d %s", rr.Code, rr.Body.String())
+	}
+	rr = do(t, routes, "GET", "/api/contexts/"+created.ID, nil)
+	decode(t, rr, &got)
+	if got["content"] != "v2" || got["name"] != "Initial" {
+		t.Errorf("partial update wrong: %+v", got)
+	}
+
+	// DELETE
+	rr = do(t, routes, "DELETE", "/api/contexts/"+created.ID, nil)
+	if rr.Code != 200 {
+		t.Fatalf("delete: %d", rr.Code)
+	}
+	rr = do(t, routes, "GET", "/api/contexts/"+created.ID, nil)
+	if rr.Code != 404 {
+		t.Errorf("after delete should be 404, got %d", rr.Code)
+	}
+}
+
+func TestListContexts_OmitsContent(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	routes := h.Routes()
+	do(t, routes, "POST", "/api/contexts", map[string]any{
+		"name": "A", "content": "secret-body", "docType": "reference",
+	})
+
+	rr := do(t, routes, "GET", "/api/contexts", nil)
+	if rr.Code != 200 {
+		t.Fatalf("list: %d", rr.Code)
+	}
+	if strings.Contains(rr.Body.String(), "secret-body") {
+		t.Errorf("list endpoint should not return body content")
+	}
+}

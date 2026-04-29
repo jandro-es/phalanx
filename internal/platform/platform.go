@@ -261,10 +261,35 @@ func (gl *GitLabClient) FetchDiff(ctx context.Context, repo, baseSHA, headSHA st
 		} else if d.RenamedFile {
 			status = "renamed"
 		}
-		files = append(files, types.FileEntry{Path: d.NewPath, Status: status})
+		add, del := countDiffLines(d.Diff)
+		files = append(files, types.FileEntry{
+			Path:      d.NewPath,
+			OldPath:   d.OldPath,
+			Status:    status,
+			Additions: add,
+			Deletions: del,
+		})
 	}
 
 	return &DiffResult{Diff: strings.Join(diffParts, "\n"), Files: files}, nil
+}
+
+// countDiffLines tallies "+" and "-" content lines in a unified diff hunk,
+// excluding the file headers (`+++`, `---`). GitLab's compare API doesn't
+// return per-file add/delete counts, so we compute them here so the composite
+// report's "Changed Files (+X/-Y)" line is non-zero on GitLab.
+func countDiffLines(hunk string) (additions, deletions int) {
+	for _, line := range strings.Split(hunk, "\n") {
+		switch {
+		case strings.HasPrefix(line, "+++"), strings.HasPrefix(line, "---"):
+			// File markers — skip.
+		case strings.HasPrefix(line, "+"):
+			additions++
+		case strings.HasPrefix(line, "-"):
+			deletions++
+		}
+	}
+	return additions, deletions
 }
 
 func (gl *GitLabClient) PostReview(ctx context.Context, session types.ReviewSession, report types.CompositeReport) error {
@@ -273,6 +298,187 @@ func (gl *GitLabClient) PostReview(ctx context.Context, session types.ReviewSess
 		fmt.Sprintf("/projects/%s/merge_requests/%d/notes", projID, session.PRNumber),
 		map[string]string{"body": report.Markdown})
 	return err
+}
+
+// ==========================================================================
+// Bitbucket Cloud Client
+// ==========================================================================
+
+// BitbucketClient implements Client for Bitbucket Cloud (bitbucket.org).
+//
+// Auth uses HTTP Basic with `<username>:<app_password>` — Bitbucket Cloud
+// doesn't support bearer tokens for the v2.0 REST API. The constructor takes
+// the raw "user:password" string (or "x-token-auth:<workspace_token>" if
+// using a workspace access token).
+type BitbucketClient struct {
+	auth    string // base "user:password" string before base64 encoding
+	baseURL string
+	client  *http.Client
+}
+
+// NewBitbucketClient creates a Bitbucket Cloud client. baseURL defaults to
+// the public API; pass a custom value for Bitbucket Server / DC (which
+// requires a different API path layout — not yet supported).
+func NewBitbucketClient(auth, baseURL string) *BitbucketClient {
+	if baseURL == "" {
+		baseURL = "https://api.bitbucket.org/2.0"
+	}
+	return &BitbucketClient{
+		auth:    auth,
+		baseURL: strings.TrimRight(baseURL, "/"),
+		client:  &http.Client{},
+	}
+}
+
+func (b *BitbucketClient) request(ctx context.Context, method, path string, body any, accept string) ([]byte, error) {
+	var reader io.Reader
+	if body != nil {
+		data, _ := json.Marshal(body)
+		reader = bytes.NewReader(data)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, b.baseURL+path, reader)
+	if err != nil {
+		return nil, err
+	}
+	if b.auth != "" {
+		// HTTP Basic. Bitbucket also accepts the encoded form directly.
+		parts := strings.SplitN(b.auth, ":", 2)
+		if len(parts) == 2 {
+			req.SetBasicAuth(parts[0], parts[1])
+		}
+	}
+	if accept == "" {
+		accept = "application/json"
+	}
+	req.Header.Set("Accept", accept)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := b.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("bitbucket %d: %s", resp.StatusCode, string(respBody))
+	}
+	return respBody, nil
+}
+
+// FetchDiff hits Bitbucket's /diff (raw text) and /diffstat (per-file stats)
+// endpoints in parallel-via-sequential calls so the report has both the diff
+// body and accurate +/- counts. `repo` is "<workspace>/<repo_slug>".
+func (b *BitbucketClient) FetchDiff(ctx context.Context, repo, baseSHA, headSHA string) (*DiffResult, error) {
+	spec := fmt.Sprintf("%s..%s", headSHA, baseSHA)
+
+	diffData, err := b.request(ctx, "GET",
+		fmt.Sprintf("/repositories/%s/diff/%s", repo, spec),
+		nil, "text/plain")
+	if err != nil {
+		return nil, err
+	}
+
+	statData, err := b.request(ctx, "GET",
+		fmt.Sprintf("/repositories/%s/diffstat/%s", repo, spec),
+		nil, "")
+	if err != nil {
+		return nil, err
+	}
+
+	var stat struct {
+		Values []struct {
+			Type             string `json:"type"`
+			Status           string `json:"status"`
+			LinesAdded       int    `json:"lines_added"`
+			LinesRemoved     int    `json:"lines_removed"`
+			Old              *struct{ Path string } `json:"old"`
+			New              *struct{ Path string } `json:"new"`
+		} `json:"values"`
+	}
+	_ = json.Unmarshal(statData, &stat)
+
+	files := make([]types.FileEntry, 0, len(stat.Values))
+	for _, v := range stat.Values {
+		fe := types.FileEntry{
+			Status:    bitbucketStatus(v.Status),
+			Additions: v.LinesAdded,
+			Deletions: v.LinesRemoved,
+		}
+		if v.New != nil {
+			fe.Path = v.New.Path
+		}
+		if v.Old != nil {
+			fe.OldPath = v.Old.Path
+			if fe.Path == "" {
+				fe.Path = v.Old.Path
+			}
+		}
+		files = append(files, fe)
+	}
+
+	return &DiffResult{Diff: string(diffData), Files: files}, nil
+}
+
+// bitbucketStatus normalises Bitbucket's diffstat status values onto the
+// shared FileEntry vocabulary used by the renderer.
+func bitbucketStatus(s string) string {
+	switch s {
+	case "added":
+		return "added"
+	case "removed":
+		return "deleted"
+	case "renamed":
+		return "renamed"
+	default:
+		return "modified"
+	}
+}
+
+// PostReview posts the composite report as a PR comment. Bitbucket doesn't
+// have an equivalent of GitHub Check Runs, so the verdict is encoded in the
+// comment body only.
+func (b *BitbucketClient) PostReview(ctx context.Context, session types.ReviewSession, report types.CompositeReport) error {
+	_, err := b.request(ctx, "POST",
+		fmt.Sprintf("/repositories/%s/pullrequests/%d/comments", session.RepositoryFullName, session.PRNumber),
+		map[string]any{
+			"content": map[string]string{"raw": report.Markdown},
+		}, "")
+	return err
+}
+
+// VerifyUser identifies the caller via /user using the supplied
+// "username:app_password" string (overriding the client default).
+func (b *BitbucketClient) VerifyUser(ctx context.Context, token string) (*UserInfo, error) {
+	req, _ := http.NewRequestWithContext(ctx, "GET", b.baseURL+"/user", nil)
+	if token != "" {
+		parts := strings.SplitN(token, ":", 2)
+		if len(parts) == 2 {
+			req.SetBasicAuth(parts[0], parts[1])
+		}
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := b.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var user struct {
+		AccountID   string `json:"account_id"`
+		Username    string `json:"username"`
+		DisplayName string `json:"display_name"`
+		Links       struct {
+			Avatar struct{ Href string } `json:"avatar"`
+		} `json:"links"`
+	}
+	json.NewDecoder(resp.Body).Decode(&user)
+
+	return &UserInfo{
+		ID:        user.AccountID,
+		Login:     user.Username,
+		AvatarURL: user.Links.Avatar.Href,
+	}, nil
 }
 
 func (gl *GitLabClient) VerifyUser(ctx context.Context, token string) (*UserInfo, error) {

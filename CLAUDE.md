@@ -19,6 +19,8 @@ make vet            # go vet ./...
 make migrate        # psql $DATABASE_URL -f migrations/001_initial.sql
 make seed           # registers every skills/*.yaml against a running server
 make docker-up      # docker compose -f deploy/docker-compose.yml up -d
+make helm-package   # mirror migrations into the chart and `helm package`
+make helm-lint      # `helm lint` on the chart
 ```
 
 Run a single test: `go test ./internal/agent -run TestParseResponse -v -race`.
@@ -61,8 +63,9 @@ Adding a built-in review dimension means dropping a YAML in `skills/`, registeri
 
 - A line `**Verdict:** pass|warn|fail|not_applicable` (case-insensitive, substring match).
 - Checklist items shaped `- [x] ...` / `- [ ] ...` / `- [~] ...` / `- [-] ...` mapping to pass/fail/warn/na.
+- An optional `### Findings` section. Each finding is a `####` heading shaped `#### {emoji?} {severity} {— | : | -} {title}` followed by `**File:**`, `**Issue:**`, `**Fix:**`, and optional `**Reference:**` lines. Severities are `critical | major | minor | suggestion | info`. The parser tolerates emoji prefixes, backticks around file paths, and `(lines 12-34)` / `(line 28)` / `L34` line markers — see `parseFindings` in `internal/agent/runtime.go`. Malformed entries are skipped, not fatal.
 
-Skill `checklist_template`s use `{{verdict}}` and `{{...}}` placeholders that the model fills in — these are not Go templates, they are documentation for the LLM. If you change the verdict regex or checklist regex, update every YAML in `skills/` to match.
+Skill `checklist_template`s use `{{verdict}}` and `{{...}}` placeholders that the model fills in — these are not Go templates, they are documentation for the LLM. If you change the verdict regex, checklist regex, or finding-heading regex, update every YAML in `skills/` to match.
 
 ### Database
 
@@ -73,9 +76,13 @@ Single migration `migrations/001_initial.sql` defines: `llm_providers`, `skills`
 `internal/config/config.go` reads everything from env vars with defaults. Key envs:
 
 - `DATABASE_URL`, `REDIS_URL`, `PORT` (3100), `HOST`
+- `PHALANX_API_TOKENS` (comma-separated bearer tokens; empty leaves the API open — LOCAL DEV ONLY)
+- `PHALANX_CORS_ALLOWED_ORIGINS` (comma-separated; empty disables CORS, "*" allowed but not recommended)
 - `PHALANX_QUEUE_CONCURRENCY` (max parallel agents per session, default 10)
 - `PHALANX_AUDIT_HASH_CHAIN` (enables tamper-evident chaining)
-- `GITHUB_TOKEN` / `GITHUB_WEBHOOK_SECRET`, `GITLAB_TOKEN` / `GITLAB_WEBHOOK_SECRET`
+- `GITHUB_TOKEN` / `GITHUB_WEBHOOK_SECRET` (HMAC-SHA256 over body, `X-Hub-Signature-256`)
+- `GITLAB_TOKEN` / `GITLAB_WEBHOOK_SECRET` (shared-token, `X-Gitlab-Token`)
+- `BITBUCKET_AUTH` / `BITBUCKET_WEBHOOK_UUID` (HTTP Basic for the API, per-webhook UUID via `X-Hook-UUID`)
 - `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`
 
 Config is loaded from env only; there is no config-file loader.

@@ -54,6 +54,83 @@ func TestParseResponse_ChecklistStatuses(t *testing.T) {
 	}
 }
 
+func TestParseResponse_FindingsCanonical(t *testing.T) {
+	body := "**Verdict:** warn\n\n" +
+		"### Checklist\n- [x] Item A\n\n" +
+		"### Findings\n\n" +
+		"#### ⚠️ Major — Missing input validation\n" +
+		"**File:** `src/api/upload.ts` (lines 34-52)\n" +
+		"**Issue:** The `fileName` parameter is unsafe.\n" +
+		"**Fix:** Sanitise with path.basename().\n" +
+		"**Reference:** OWASP A01\n\n" +
+		"#### 💡 Suggestion — Rate limiting\n" +
+		"**File:** `src/api/upload.ts` (line 28)\n" +
+		"**Issue:** No rate limit configured.\n" +
+		"**Fix:** Apply existing middleware.\n"
+
+	parsed := parseResponse(body)
+
+	if len(parsed.Findings) != 2 {
+		t.Fatalf("expected 2 findings, got %d", len(parsed.Findings))
+	}
+	got := parsed.Findings[0]
+	if got.Severity != types.SeverityMajor {
+		t.Errorf("severity[0]: got %q, want major", got.Severity)
+	}
+	if got.File != "src/api/upload.ts" {
+		t.Errorf("file[0]: got %q", got.File)
+	}
+	if got.Lines != "34-52" {
+		t.Errorf("lines[0]: got %q", got.Lines)
+	}
+	if !strings.Contains(got.Issue, "fileName") {
+		t.Errorf("issue[0]: got %q", got.Issue)
+	}
+	if !strings.Contains(got.Fix, "path.basename") {
+		t.Errorf("fix[0]: got %q", got.Fix)
+	}
+	if got.Reference != "OWASP A01" {
+		t.Errorf("reference[0]: got %q", got.Reference)
+	}
+
+	got = parsed.Findings[1]
+	if got.Severity != types.SeveritySuggestion {
+		t.Errorf("severity[1]: got %q, want suggestion", got.Severity)
+	}
+	if got.Lines != "28" {
+		t.Errorf("lines[1]: got %q", got.Lines)
+	}
+}
+
+func TestParseResponse_NoFindingsSection(t *testing.T) {
+	body := "**Verdict:** pass\n\n- [x] all good\n"
+	if parseResponse(body).Findings != nil {
+		t.Errorf("absent Findings section should yield nil")
+	}
+}
+
+func TestParseResponse_FindingsWithColonSeparator(t *testing.T) {
+	body := "### Findings\n\n#### Critical: Hardcoded secret\n" +
+		"**File:** `pkg/auth/keys.go`\n" +
+		"**Issue:** API key checked in.\n" +
+		"**Fix:** Move to vault.\n"
+
+	got := parseResponse(body).Findings
+	if len(got) != 1 || got[0].Severity != types.SeverityCritical {
+		t.Fatalf("colon-separated heading not parsed: %+v", got)
+	}
+	if got[0].File != "pkg/auth/keys.go" {
+		t.Errorf("file: %q", got[0].File)
+	}
+}
+
+func TestParseResponse_EmptyFindingsSection(t *testing.T) {
+	body := "### Findings\n\nNo issues found.\n"
+	if parseResponse(body).Findings != nil {
+		t.Errorf("findings section with no entries should yield nil")
+	}
+}
+
 func TestMatchGlob(t *testing.T) {
 	cases := []struct {
 		pattern, path string
@@ -88,6 +165,20 @@ func TestEstimateCost_KnownModel(t *testing.T) {
 func TestEstimateCost_UnknownModel(t *testing.T) {
 	if estimateCost("no-such-model", 10, 10) != nil {
 		t.Error("unknown model should return nil cost")
+	}
+}
+
+func TestEstimateCost_NewerModelsCovered(t *testing.T) {
+	for _, m := range []string{
+		"claude-opus-4-7",
+		"claude-haiku-4-5",
+		"claude-sonnet-4-6",
+		"gpt-4o-mini",
+		"deepseek-chat",
+	} {
+		if estimateCost(m, 1_000, 1_000) == nil {
+			t.Errorf("expected cost for %q to be in the table", m)
+		}
 	}
 }
 

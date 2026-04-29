@@ -4,6 +4,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 )
 
 // Config is the top-level Phalanx configuration.
@@ -13,6 +14,10 @@ type Config struct {
 	DatabaseURL string
 	RedisURL    string
 	LogLevel    string
+
+	// API auth
+	APITokens          []string // PHALANX_API_TOKENS, comma-separated; empty = auth disabled
+	CORSAllowedOrigins []string // PHALANX_CORS_ALLOWED_ORIGINS; empty = no CORS
 
 	// Queue
 	QueueConcurrency int
@@ -37,6 +42,10 @@ type Config struct {
 	GitLabWebhookSecret string
 	GitLabURL           string
 
+	BitbucketAuth        string // "username:app_password" or "x-token-auth:<token>"
+	BitbucketAPIURL      string // override for Bitbucket Server / DC; defaults to bitbucket.org
+	BitbucketWebhookUUID string // X-Hook-UUID expected on inbound webhooks
+
 	// LLM keys
 	AnthropicAPIKey string
 	OpenAIAPIKey    string
@@ -51,6 +60,9 @@ func Load() *Config {
 		DatabaseURL: envStr("DATABASE_URL", "postgresql://phalanx:phalanx@localhost:5432/phalanx"),
 		RedisURL:    envStr("REDIS_URL", "redis://localhost:6379"),
 		LogLevel:    envStr("LOG_LEVEL", "info"),
+
+		APITokens:          envCSV("PHALANX_API_TOKENS"),
+		CORSAllowedOrigins: envCSV("PHALANX_CORS_ALLOWED_ORIGINS"),
 
 		QueueConcurrency: envInt("PHALANX_QUEUE_CONCURRENCY", 10),
 		QueueMaxRetries:  envInt("PHALANX_QUEUE_MAX_RETRIES", 2),
@@ -70,6 +82,10 @@ func Load() *Config {
 		GitLabToken:         envStr("GITLAB_TOKEN", ""),
 		GitLabWebhookSecret: envStr("GITLAB_WEBHOOK_SECRET", ""),
 		GitLabURL:           envStr("GITLAB_URL", "https://gitlab.com"),
+
+		BitbucketAuth:        envStr("BITBUCKET_AUTH", ""),
+		BitbucketAPIURL:      envStr("BITBUCKET_API_URL", "https://api.bitbucket.org/2.0"),
+		BitbucketWebhookUUID: envStr("BITBUCKET_WEBHOOK_UUID", ""),
 
 		AnthropicAPIKey: envStr("ANTHROPIC_API_KEY", ""),
 		OpenAIAPIKey:    envStr("OPENAI_API_KEY", ""),
@@ -91,6 +107,26 @@ func envInt(key string, def int) int {
 		}
 	}
 	return def
+}
+
+// envCSV reads a comma-separated env var into a trimmed, non-empty slice.
+// Returns nil when unset so callers can distinguish "no value" from "[]".
+func envCSV(key string) []string {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if v := strings.TrimSpace(p); v != "" {
+			out = append(out, v)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func envBool(key string, def bool) bool {

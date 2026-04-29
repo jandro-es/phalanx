@@ -77,6 +77,10 @@ func main() {
 		platforms[types.PlatformGitLab] = platform.NewGitLabClient(cfg.GitLabToken, cfg.GitLabURL)
 		log.Info().Msg("GitLab integration enabled")
 	}
+	if cfg.BitbucketAuth != "" {
+		platforms[types.PlatformBitbucket] = platform.NewBitbucketClient(cfg.BitbucketAuth, cfg.BitbucketAPIURL)
+		log.Info().Msg("Bitbucket integration enabled")
+	}
 
 	// Orchestrator (acts as the async review worker)
 	builder := &report.Builder{}
@@ -115,7 +119,14 @@ func main() {
 	log.Info().Int("concurrency", cfg.QueueConcurrency).Msg("Review queue worker started")
 
 	// HTTP Server
-	handler := &api.Handler{DB: pool, Audit: auditLogger, Enqueuer: queueClient}
+	handler := &api.Handler{
+		DB:                   pool,
+		Audit:                auditLogger,
+		Enqueuer:             queueClient,
+		GitHubWebhookSecret:  cfg.GitHubWebhookSecret,
+		GitLabWebhookSecret:  cfg.GitLabWebhookSecret,
+		BitbucketWebhookUUID: cfg.BitbucketWebhookUUID,
+	}
 
 	r := chi.NewRouter()
 	r.Use(chimw.Logger)
@@ -123,11 +134,31 @@ func main() {
 	r.Use(chimw.RealIP)
 	r.Use(chimw.RequestID)
 	r.Use(chimw.Timeout(30 * time.Second))
-	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins: []string{"*"},
-		AllowedMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders: []string{"*"},
+
+	// CORS: empty allow-list disables it entirely. Wildcard "*" is supported
+	// for explicit opt-in; production deployments should set
+	// PHALANX_CORS_ALLOWED_ORIGINS to the dashboard origin(s).
+	if len(cfg.CORSAllowedOrigins) > 0 {
+		r.Use(cors.Handler(cors.Options{
+			AllowedOrigins:   cfg.CORSAllowedOrigins,
+			AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+			AllowedHeaders:   []string{"Authorization", "Content-Type"},
+			AllowCredentials: false,
+			MaxAge:           300,
+		}))
+	}
+
+	// Bearer-token auth: empty PHALANX_API_TOKENS leaves the API open for
+	// local dev. Webhooks and /health bypass auth (webhooks have HMAC).
+	r.Use(api.BearerAuth(api.AuthConfig{
+		Tokens:       cfg.APITokens,
+		SkipPrefixes: []string{"/api/webhooks/", "/health"},
 	}))
+	if len(cfg.APITokens) == 0 {
+		log.Warn().Msg("PHALANX_API_TOKENS is empty — API auth is DISABLED. Set this in any non-local deployment.")
+	} else {
+		log.Info().Int("token_count", len(cfg.APITokens)).Msg("API bearer auth enabled")
+	}
 
 	r.Mount("/", handler.Routes())
 

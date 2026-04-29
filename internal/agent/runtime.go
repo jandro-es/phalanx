@@ -6,8 +6,11 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"os"
 	"regexp"
+	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/phalanx-ai/phalanx/internal/audit"
 	"github.com/phalanx-ai/phalanx/internal/llm"
@@ -240,6 +243,28 @@ type parsedResponse struct {
 var verdictRe = regexp.MustCompile(`(?i)\*\*Verdict:\*\*\s*(.+)`)
 var checklistRe = regexp.MustCompile(`(?m)^- \[([ x~\-])\]\s*(.+)$`)
 
+// findingsHeaderRe matches the start of the Findings section. We slice the
+// document to everything that follows it before parsing individual entries.
+var findingsHeaderRe = regexp.MustCompile(`(?im)^#{2,3}\s+Findings\s*$`)
+
+// findingHeadingRe matches the per-finding heading the skill templates use:
+//
+//	#### 🔴 Critical — Hardcoded API key
+//	#### Major: Missing input validation
+//
+// Capture group 1 is the severity word (case-insensitive); 2 is the title.
+// We accept "—", "-", or ":" as the separator and tolerate emoji prefixes.
+var findingHeadingRe = regexp.MustCompile(
+	`(?im)^#{3,4}\s*(?:[^A-Za-z\n]*)?(critical|major|minor|suggestion|info)\b\s*[—\-:]\s*(.+)$`,
+)
+
+// findingFieldRe pulls "**Field:** value" pairs out of the body of a finding.
+var findingFieldRe = regexp.MustCompile(`(?im)^\*\*([A-Za-z]+):\*\*\s*(.+?)\s*$`)
+
+// linesInTextRe extracts a "(lines 12-34)" / "(line 12)" / "L34" tail from a
+// File: value so we can populate Finding.Lines separately from Finding.File.
+var linesInTextRe = regexp.MustCompile(`\(lines?\s+([0-9\-,–\s]+)\)|L([0-9]+(?:[\-–][0-9]+)?)`)
+
 func parseResponse(content string) parsedResponse {
 	// Extract verdict
 	verdict := types.VerdictWarn
@@ -272,21 +297,212 @@ func parseResponse(content string) parsedResponse {
 		checklist = append(checklist, types.ChecklistItem{Item: strings.TrimSpace(m[2]), Status: status})
 	}
 
-	return parsedResponse{Verdict: verdict, Checklist: checklist, Findings: nil}
+	return parsedResponse{Verdict: verdict, Checklist: checklist, Findings: parseFindings(content)}
+}
+
+// parseFindings walks the "### Findings" section of an agent report and
+// returns a structured slice. The skill output contract is documented in
+// PHALANX-PLAN.md §7.1 and the YAML templates in `skills/`.
+//
+// A best-effort parse: malformed entries are skipped rather than failing the
+// review. Always returns nil (not []) when no findings are present so the
+// JSON serialisation stays "null" by convention.
+func parseFindings(content string) []types.Finding {
+	loc := findingsHeaderRe.FindStringIndex(content)
+	if loc == nil {
+		return nil
+	}
+	section := content[loc[1]:]
+
+	// Cut at the next H1/H2 (which would be the start of an unrelated section
+	// like a footer). Per-finding headings are H3/H4 so they're safe.
+	if cut := regexp.MustCompile(`(?m)^#{1,2}\s`).FindStringIndex(section); cut != nil {
+		section = section[:cut[0]]
+	}
+
+	matches := findingHeadingRe.FindAllStringSubmatchIndex(section, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+
+	var out []types.Finding
+	for i, m := range matches {
+		// Body runs from the end of this heading to the start of the next.
+		bodyStart := m[1]
+		bodyEnd := len(section)
+		if i+1 < len(matches) {
+			bodyEnd = matches[i+1][0]
+		}
+		head := section[m[0]:m[1]]
+		body := section[bodyStart:bodyEnd]
+
+		// Pull severity + title out of the heading itself.
+		hm := findingHeadingRe.FindStringSubmatch(head)
+		if len(hm) < 3 {
+			continue
+		}
+		f := types.Finding{
+			Severity: normaliseSeverity(hm[1]),
+			Issue:    strings.TrimSpace(stripDecorations(hm[2])),
+		}
+
+		// Then pull structured **Field:** lines out of the body.
+		for _, fm := range findingFieldRe.FindAllStringSubmatch(body, -1) {
+			key := strings.ToLower(strings.TrimSpace(fm[1]))
+			val := strings.TrimSpace(fm[2])
+			switch key {
+			case "file":
+				f.File, f.Lines = splitFileAndLines(val)
+			case "lines", "line":
+				f.Lines = strings.TrimSpace(val)
+			case "issue", "problem", "description":
+				if f.Issue == "" || strings.EqualFold(f.Issue, "—") {
+					f.Issue = val
+				} else {
+					// Heading already had a title; richer body description wins.
+					f.Issue = val
+				}
+			case "fix", "remediation", "suggestion":
+				f.Fix = val
+			case "reference", "ref", "cwe", "owasp":
+				f.Reference = val
+			}
+		}
+
+		if f.Issue == "" && f.File == "" && f.Fix == "" {
+			// Heading-only entries with no useful body — skip rather than
+			// emit empty rows.
+			continue
+		}
+		out = append(out, f)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func normaliseSeverity(raw string) types.Severity {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "critical":
+		return types.SeverityCritical
+	case "major":
+		return types.SeverityMajor
+	case "minor":
+		return types.SeverityMinor
+	case "suggestion":
+		return types.SeveritySuggestion
+	case "info":
+		return types.SeverityInfo
+	}
+	return types.SeverityInfo
+}
+
+// stripDecorations removes leading icons, bold markers, and quotes left over
+// from heading content.
+func stripDecorations(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.Trim(s, "*_`\"' ")
+	return strings.TrimSpace(s)
+}
+
+// splitFileAndLines parses a "File:" value like "src/foo.ts (lines 34-52)"
+// into ("src/foo.ts", "34-52"). Backticks are stripped.
+func splitFileAndLines(raw string) (string, string) {
+	v := strings.TrimSpace(raw)
+	v = strings.Trim(v, "`")
+
+	if m := linesInTextRe.FindStringSubmatchIndex(v); m != nil {
+		lines := ""
+		// Group 1 = "lines 34-52" form; group 2 = "L34" form.
+		if m[2] != -1 {
+			lines = strings.TrimSpace(v[m[2]:m[3]])
+		} else if m[4] != -1 {
+			lines = strings.TrimSpace(v[m[4]:m[5]])
+		}
+		file := strings.TrimSpace(v[:m[0]])
+		file = strings.Trim(file, "`")
+		return strings.TrimRight(file, " "), lines
+	}
+	return v, ""
 }
 
 // --- Cost estimation ---
 
-var costTable = map[string][2]float64{ // [input_per_1M, output_per_1M]
-	"claude-sonnet-4-20250514": {3, 15},
+// costTable maps a model name to [input_per_1M, output_per_1M] USD prices.
+// Models not present here record `nil` cost.
+//
+// To add a model without changing code, set PHALANX_MODEL_PRICING to a
+// comma-separated list of `model=input/output` entries (e.g.
+// "my-model=2.5/10,other=0.5/2"). Entries override the built-in table.
+var costTable = map[string][2]float64{
+	// Anthropic Claude
+	"claude-sonnet-4-20250514":  {3, 15},
+	"claude-sonnet-4-6":         {3, 15},
+	"claude-sonnet-4-6-1m":      {3, 15},
 	"claude-haiku-4-5-20251001": {0.8, 4},
-	"claude-opus-4-6":          {15, 75},
-	"gpt-4.1":                  {2, 8},
-	"gpt-4.1-mini":             {0.4, 1.6},
-	"deepseek-r1":              {0.55, 2.19},
+	"claude-haiku-4-5":          {0.8, 4},
+	"claude-opus-4-6":           {15, 75},
+	"claude-opus-4-7":           {15, 75},
+	"claude-opus-4-7[1m]":       {15, 75},
+	// OpenAI
+	"gpt-4.1":      {2, 8},
+	"gpt-4.1-mini": {0.4, 1.6},
+	"gpt-4o":       {2.5, 10},
+	"gpt-4o-mini":  {0.15, 0.6},
+	"o1":           {15, 60},
+	"o1-mini":      {3, 12},
+	// DeepSeek
+	"deepseek-r1":   {0.55, 2.19},
+	"deepseek-chat": {0.27, 1.10},
+}
+
+// envOverrides is populated lazily on first estimateCost call from
+// PHALANX_MODEL_PRICING; serves as the per-process override layer.
+var (
+	envOverridesOnce sync.Once
+	envOverrides     map[string][2]float64
+)
+
+func loadEnvOverrides() {
+	raw := os.Getenv("PHALANX_MODEL_PRICING")
+	envOverrides = map[string][2]float64{}
+	if raw == "" {
+		return
+	}
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		eq := strings.IndexByte(entry, '=')
+		if eq < 0 {
+			continue
+		}
+		model := strings.TrimSpace(entry[:eq])
+		rates := strings.Split(entry[eq+1:], "/")
+		if len(rates) != 2 {
+			continue
+		}
+		in, err1 := parseFloat(rates[0])
+		out, err2 := parseFloat(rates[1])
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		envOverrides[model] = [2]float64{in, out}
+	}
+}
+
+func parseFloat(s string) (float64, error) {
+	return strconv.ParseFloat(strings.TrimSpace(s), 64)
 }
 
 func estimateCost(model string, inputTokens, outputTokens int) *float64 {
+	envOverridesOnce.Do(loadEnvOverrides)
+	if rates, ok := envOverrides[model]; ok {
+		cost := float64(inputTokens)/1e6*rates[0] + float64(outputTokens)/1e6*rates[1]
+		return &cost
+	}
 	rates, ok := costTable[model]
 	if !ok {
 		return nil

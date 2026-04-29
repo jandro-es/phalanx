@@ -1,0 +1,62 @@
+{{- if .Values.migrations.enabled -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "phalanx.fullname" . }}-migrate
+  labels:
+    app.kubernetes.io/name: {{ include "phalanx.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  annotations:
+    # Run before app pods can start. Hook is post-install,post-upgrade so the
+    # bundled Postgres dependency has time to initialise on first install.
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.migrations.backoffLimit }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "phalanx.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: migrate
+          image: postgres:16-alpine
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              echo "Waiting for database to accept connections..."
+              until psql "$DATABASE_URL" -c '\q' >/dev/null 2>&1; do
+                sleep 2
+              done
+              echo "Applying migrations..."
+              psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /migrations/001_initial.sql
+          env:
+            {{- if .Values.postgresql.enabled }}
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "phalanx.fullname" . }}-postgresql
+                  key: password
+            - name: DATABASE_URL
+              value: "postgresql://{{ .Values.postgresql.auth.username }}:$(DB_PASSWORD)@{{ include "phalanx.fullname" . }}-postgresql:5432/{{ .Values.postgresql.auth.database }}"
+            {{- else }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.postgresql.external.existingSecret }}
+                  key: url
+            {{- end }}
+          volumeMounts:
+            - name: migrations
+              mountPath: /migrations
+              readOnly: true
+      volumes:
+        - name: migrations
+          configMap:
+            name: {{ include "phalanx.fullname" . }}-migrations
+{{- end }}

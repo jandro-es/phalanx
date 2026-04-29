@@ -313,25 +313,60 @@ func TestRouter_ErrorsAreWrappedNotNil(t *testing.T) {
 
 // --- Rate limiter ---
 
-func TestRateLimiter_CapsBurst(t *testing.T) {
+func TestRateLimiter_DrainsBucket(t *testing.T) {
 	rl := newRateLimiter()
+	ctx := context.Background()
 
-	// rpm=60 → 1 token per second. First call should pass, subsequent 59 consume the bucket.
-	for i := 0; i < 60; i++ {
-		rl.acquire("prov", 60)
+	// rpm=60 → bucket starts full at 60. The 60 immediate acquires must
+	// all return without sleeping (the test would otherwise time out).
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 60; i++ {
+			if err := rl.acquire(ctx, "prov", 60); err != nil {
+				t.Errorf("acquire %d: %v", i, err)
+			}
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("first 60 acquires should not block when bucket starts full")
 	}
-	// The 61st call would normally block; the current implementation clamps instead of blocking.
-	// Either way, the function must return without panicking.
-	rl.acquire("prov", 60)
+}
+
+func TestRateLimiter_BlocksWhenEmpty(t *testing.T) {
+	rl := newRateLimiter()
+	// Override sleep so the limiter doesn't actually wait on a real clock.
+	var sleeps int
+	rl.sleep = func(d time.Duration) { sleeps++ }
+	ctx := context.Background()
+
+	// Drain a bucket of 2 and then watch the next call wait. We can't
+	// actually wait without time advancing, so we cancel the context to
+	// confirm the limiter is correctly waiting (rather than clamping and
+	// returning immediately the way the old impl did).
+	for i := 0; i < 2; i++ {
+		if err := rl.acquire(ctx, "drain", 2); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cancelCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := rl.acquire(cancelCtx, "drain", 2); err == nil {
+		t.Fatal("acquire on empty bucket with cancelled context should return error")
+	}
 }
 
 func TestRateLimiter_SeparateBucketsPerProvider(t *testing.T) {
 	rl := newRateLimiter()
+	ctx := context.Background()
 	for i := 0; i < 60; i++ {
-		rl.acquire("a", 60)
+		_ = rl.acquire(ctx, "a", 60)
 	}
 	// Provider "b" should still have a full bucket
-	rl.acquire("b", 60)
+	_ = rl.acquire(ctx, "b", 60)
 	if rl.buckets["b"].tokens > 60 {
 		t.Errorf("b bucket overflow: %f", rl.buckets["b"].tokens)
 	}
@@ -339,7 +374,7 @@ func TestRateLimiter_SeparateBucketsPerProvider(t *testing.T) {
 
 func TestRateLimiter_ZeroRPMUsesDefault(t *testing.T) {
 	rl := newRateLimiter()
-	rl.acquire("prov", 0) // rpm=0 should default to 600
+	_ = rl.acquire(context.Background(), "prov", 0) // rpm=0 should default to 600
 	if rl.buckets["prov"] == nil {
 		t.Fatal("bucket should be created for rpm=0")
 	}

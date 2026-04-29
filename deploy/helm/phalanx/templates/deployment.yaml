@@ -51,13 +51,14 @@ spec:
             periodSeconds: 10
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "phalanx.fullname" . }}-config
           env:
             - name: NODE_ENV
               value: production
             - name: PORT
               value: "3100"
-            - name: LOG_LEVEL
-              value: {{ .Values.config.logLevel }}
             # Database
             {{- if .Values.postgresql.enabled }}
             - name: DATABASE_URL
@@ -84,6 +85,12 @@ spec:
             {{- end }}
             # Secrets from Kubernetes secret
             {{- $secretName := .Values.secrets.existingSecret | default (printf "%s-secrets" (include "phalanx.fullname" .)) }}
+            - name: PHALANX_API_TOKENS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: api-tokens
+                  optional: true
             - name: GITHUB_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -102,6 +109,24 @@ spec:
                   name: {{ $secretName }}
                   key: gitlab-token
                   optional: true
+            - name: GITLAB_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: gitlab-webhook-secret
+                  optional: true
+            - name: BITBUCKET_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: bitbucket-auth
+                  optional: true
+            - name: BITBUCKET_WEBHOOK_UUID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: bitbucket-webhook-uuid
+                  optional: true
             - name: ANTHROPIC_API_KEY
               valueFrom:
                 secretKeyRef:
@@ -114,13 +139,12 @@ spec:
                   name: {{ $secretName }}
                   key: openai-api-key
                   optional: true
-            # Queue config
-            - name: PHALANX_QUEUE_CONCURRENCY
-              value: "{{ .Values.config.queue.concurrency }}"
-            - name: PHALANX_QUEUE_JOB_TIMEOUT
-              value: "{{ .Values.config.queue.jobTimeoutMs }}"
-            - name: PHALANX_AUDIT_HASH_CHAIN
-              value: "{{ .Values.config.audit.hashChain }}"
+            - name: DEEPSEEK_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: deepseek-api-key
+                  optional: true
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

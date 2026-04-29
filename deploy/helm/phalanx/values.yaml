@@ -99,19 +99,37 @@ config:
     createCheckRun: true
     blockMergeOnFail: true
 
+  # Comma-separated list of origins permitted by CORS. Empty disables CORS.
+  cors:
+    allowedOrigins: ""
+
+  # Comma-separated <model>=<input>/<output> overrides for the cost table
+  # in internal/agent/runtime.go. Empty uses the built-in defaults only.
+  modelPricingOverrides: ""
+
 # ---------------------------------------------------------------------------
 # Secrets (create manually or reference existing)
 # ---------------------------------------------------------------------------
 secrets:
-  # Create a Kubernetes secret named "phalanx-secrets" with these keys:
+  # If set, the chart skips creating its own secret and the deployment reads
+  # from this secret name. Recommended for production (use sealed-secrets,
+  # external-secrets, etc.).
   existingSecret: ""
-  # Or provide directly (NOT recommended for production):
+
+  # Inline values — only used when existingSecret is empty. NOT recommended
+  # for production: helm renders these into chart history.
+  api:
+    # Comma-separated bearer tokens accepted by /api/*. Empty disables auth.
+    tokens: ""
   github:
     token: ""
     webhookSecret: ""
   gitlab:
     token: ""
     webhookSecret: ""
+  bitbucket:
+    auth: ""        # "<username>:<app_password>" or "x-token-auth:<token>"
+    webhookUuid: "" # X-Hook-UUID expected on inbound webhooks
   llm:
     anthropicApiKey: ""
     openaiApiKey: ""

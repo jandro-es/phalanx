@@ -1,0 +1,30 @@
+{{/*
+  Bundles migration SQL files for the migration Job.
+
+  Helm's Files API can only read paths inside the chart. The chart's
+  `migrations/` directory is populated at package time by `make helm-package`
+  (which copies the repo-root `migrations/*.sql` in). When developing locally
+  you can `cp ../../../migrations/*.sql migrations/` to mirror that.
+*/}}
+{{- if .Values.migrations.enabled -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "phalanx.fullname" . }}-migrations
+  labels:
+    app.kubernetes.io/name: {{ include "phalanx.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation
+data:
+{{- $files := .Files.Glob "migrations/*.sql" }}
+{{- if $files }}
+{{ $files.AsConfig | indent 2 }}
+{{- else }}
+  # No migration SQL was bundled. Run `make helm-package` from the repo root
+  # before installing, or copy migrations/*.sql into the chart directory.
+  README.txt: "no migrations bundled — see make helm-package"
+{{- end }}
+{{- end }}

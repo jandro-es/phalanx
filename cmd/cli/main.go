@@ -147,6 +147,85 @@ name are updated in place.`,
 	providerCmd.AddCommand(providerList, providerRegister)
 	root.AddCommand(providerCmd)
 
+	// --- context ---
+	contextCmd := &cobra.Command{Use: "context", Short: "Manage context documents"}
+	contextList := &cobra.Command{
+		Use: "list", Short: "List all context documents",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			body, err := apiGet("/api/contexts")
+			if err != nil {
+				return err
+			}
+			fmt.Println(body)
+			return nil
+		},
+	}
+	contextRegister := &cobra.Command{
+		Use:   "register [file]",
+		Short: "Register a context document from YAML",
+		Long: `Register a context document. The YAML must contain:
+  name: <human label>
+  doc_type: guideline | non-negotiable | reference | example
+  content: |
+    <multiline body>
+  tags: [optional, list]
+
+Posts to /api/contexts on the configured server.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			data, err := os.ReadFile(args[0])
+			if err != nil {
+				return err
+			}
+			var spec struct {
+				Name    string   `yaml:"name" json:"name"`
+				Content string   `yaml:"content" json:"content"`
+				DocType string   `yaml:"doc_type" json:"docType"`
+				Tags    []string `yaml:"tags" json:"tags"`
+			}
+			if err := yaml.Unmarshal(data, &spec); err != nil {
+				return fmt.Errorf("invalid YAML: %w", err)
+			}
+			if spec.Name == "" || spec.Content == "" || spec.DocType == "" {
+				return fmt.Errorf("name, content, and doc_type are required")
+			}
+			jsonBody, err := json.Marshal(spec)
+			if err != nil {
+				return err
+			}
+			resp, err := apiPost("/api/contexts", jsonBody)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("✅ Context registered (%s, %s): %s\n", spec.Name, spec.DocType, resp)
+			return nil
+		},
+	}
+	contextDelete := &cobra.Command{
+		Use:   "delete [id]",
+		Short: "Delete a context document by ID",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			req, _ := http.NewRequest("DELETE", serverURL+"/api/contexts/"+args[0], nil)
+			if apiToken != "" {
+				req.Header.Set("Authorization", "Bearer "+apiToken)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close()
+			body, _ := io.ReadAll(resp.Body)
+			if resp.StatusCode >= 400 {
+				return fmt.Errorf("API %d: %s", resp.StatusCode, string(body))
+			}
+			fmt.Printf("🗑  %s\n", string(body))
+			return nil
+		},
+	}
+	contextCmd.AddCommand(contextList, contextRegister, contextDelete)
+	root.AddCommand(contextCmd)
+
 	// --- agent ---
 	agentCmd := &cobra.Command{Use: "agent", Short: "Manage agents"}
 	agentList := &cobra.Command{

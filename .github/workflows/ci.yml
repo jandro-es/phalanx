@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  go:
+    name: Go (build · vet · test)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: phalanx
+          POSTGRES_PASSWORD: phalanx
+          POSTGRES_DB: phalanx
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U phalanx"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Drives audit + handler integration tests that skip when unset.
+      PHALANX_TEST_DATABASE_URL: postgresql://phalanx:phalanx@localhost:5432/phalanx
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          check-latest: true
+          cache: true
+      - name: Apply DB migration
+        env:
+          PGPASSWORD: phalanx
+        run: psql -h localhost -U phalanx -d phalanx -f migrations/001_initial.sql
+      - run: go build ./...
+      - run: go vet ./...
+      # -p 1 forces serial package execution. The audit / orchestrator / api
+      # integration tests share a single Postgres database via TRUNCATE-based
+      # test isolation, which races when packages run concurrently.
+      - run: go test ./... -race -count=1 -p 1
+
+  golangci-lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          check-latest: true
+          cache: true
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          args: --timeout=5m
+
+  dashboard:
+    name: Dashboard (typecheck · build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - run: npm ci || npm install
+      - run: npx tsc --noEmit
+      - run: npm run build
+
+  helm:
+    name: Helm chart (lint · template)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: latest
+      - name: Mirror migrations into chart
+        run: |
+          mkdir -p deploy/helm/phalanx/migrations
+          cp migrations/*.sql deploy/helm/phalanx/migrations/
+      - name: Resolve dependencies
+        run: helm dependency update deploy/helm/phalanx
+      - run: helm lint deploy/helm/phalanx
+      - run: helm template phalanx deploy/helm/phalanx > /dev/null

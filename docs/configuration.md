@@ -471,33 +471,31 @@ A **context document** is reference material appended to an agent's system promp
 
 ### Adding a context document
 
-There's no `/api/context` endpoint in the HTTP API yet — for now, insert directly via SQL and link to agents with `agent_context`:
+Three options, in order of preference:
+
+**1. Dashboard.** The "Contexts" tab lists, creates, and deletes context documents.
+
+**2. CLI.** Write the document as YAML and register it:
+
+```yaml
+# acme-conventions.yaml
+name: Acme coding conventions
+doc_type: non-negotiable
+tags: [golang, internal]
+content: |
+  All new Go code must follow the conventions in https://wiki.acme.com/go-style.
+
+  Hard rules (violations => fail):
+  - No `panic()` in library code; use error returns.
+  - No logging of raw user input at info level (may contain PII).
+```
 
 ```bash
-docker exec -i deploy-postgres-1 psql -U phalanx -d phalanx <<'SQL'
-INSERT INTO context_documents (name, content, doc_type, tags)
-VALUES (
-  'Acme coding conventions',
-  $$
-All new Go code must follow the conventions in https://wiki.acme.com/go-style.
-
-Hard rules (violations => fail):
-- No `panic()` in library code; use error returns.
-- No logging of raw user input at info level (may contain PII).
-- Struct literals use field names — positional-only initialisation is forbidden
-  in public types.
-  $$,
-  'non-negotiable',
-  ARRAY['golang', 'internal']
-);
-
--- Attach to an agent by id
-INSERT INTO agent_context (agent_id, context_id)
-SELECT
-  (SELECT id FROM agents WHERE name = 'security-haiku'),
-  (SELECT id FROM context_documents WHERE name = 'Acme coding conventions');
-SQL
+phalanx context register acme-conventions.yaml
+phalanx context list
 ```
+
+**3. HTTP API directly.** `POST /api/contexts` with `{name, content, docType, tags}` (camelCase request, snake_case response). To bind to an agent, include the new context's id in the `contextIds` array of `POST /api/agents` or `PUT /api/agents/:id`.
 
 The orchestrator eager-loads `context_documents` for each agent and the runtime concatenates them to the system prompt under a clearly-delimited header:
 
@@ -552,14 +550,29 @@ Every retry and fallback emits an audit event (`llm.error`, `llm.fallback`), so 
 
 ---
 
-## API tokens (optional)
+## API tokens
 
-Phalanx does not ship with a built-in identity store. Authentication is handled by the reverse proxy / ingress in front of the server — either:
+Phalanx ships with a built-in bearer-token check enforced by middleware on every `/api/*` route. Webhooks (`/api/webhooks/*`) and `/health` bypass it — webhooks are authenticated by signature instead (see below).
 
-- **Gateway-level** (recommended). Put Phalanx behind Nginx, Traefik, or a cloud LB that terminates TLS and checks `Authorization: Bearer ...` or `X-API-Key`. The server itself doesn't verify the token — it just logs the `Actor` header from the request for audit.
-- **No auth at all** — dev/local only. Bind the server to `127.0.0.1` and skip the proxy.
+Set the accepted tokens as a comma-separated list:
 
-If you want per-user audit trails, set `Authorization: Bearer <opaque token>` from clients and have the proxy look up the user in your identity store. The decoded username should be forwarded to Phalanx as a custom header (future work — today the audit log records `actor=system` for most events; decision endpoints record the supplied `engineerId`).
+```bash
+PHALANX_API_TOKENS=phx_prod_eng_2026_xxx,phx_ci_2026_yyy
+```
+
+- **Empty disables auth entirely.** This is the default for local dev so `make run` keeps working out of the box. **Production deployments MUST set this** — the server logs a warning at startup when it isn't.
+- Tokens are matched verbatim (constant-time compare) against the `Authorization: Bearer <token>` header. Use opaque, high-entropy values; rotate by appending the new token, redeploying clients, and removing the old one.
+- The CLI (`phalanx --token ...` / `PHALANX_TOKEN`), dashboard (set the token in the **Settings** page; persisted to `localStorage`), and GitHub Action (`with: phalanx_token: ...`) already send the header.
+
+For per-user audit trails, terminate auth in your reverse proxy and forward the user identity as the `engineerId` field on `POST /api/decisions`. The bearer-token check is platform-wide; user identity for decisions is captured separately.
+
+### Webhook signatures
+
+When `GITHUB_WEBHOOK_SECRET` is set, every `/api/webhooks/github` request must carry a valid `X-Hub-Signature-256: sha256=<hex(hmac_sha256(secret, body))>` header — the standard GitHub format. Configure the same string in the repo/org webhook **Secret** field.
+
+When `GITLAB_WEBHOOK_SECRET` is set, every `/api/webhooks/gitlab` request must carry an `X-Gitlab-Token` header equal to the secret. Configure the same string in the project webhook **Secret token** field.
+
+Empty secrets disable verification (so you can run unauthenticated locally), but production MUST set them — without them, anyone who can reach the webhook URL can spawn reviews.
 
 ---
 
